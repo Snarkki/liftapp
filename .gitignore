@@ -1,0 +1,44 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.sqlite3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+static/frontend/
+frontend/static/
+staticfiles/
+
+# IDE and OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Local deploy artifacts
+deploy/
+deploy_production
+deploy_production.sh
+/*.crt
+/*.key

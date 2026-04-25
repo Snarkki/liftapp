@@ -1,0 +1,47 @@
+{
+  "name": "liftapp-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "webpack --mode development --watch",
+    "build": "webpack --mode production",
+    "serve": "webpack serve --mode development"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.12.1",
+    "@types/lodash": "^4.17.17",
+    "autoprefixer": "^10.4.21",
+    "brotli-webpack-plugin": "^1.1.0",
+    "compression-webpack-plugin": "^12.0.0",
+    "concurrently": "^9.1.2",
+    "css-loader": "^7.1.2",
+    "postcss": "^8.5.3",
+    "postcss-loader": "^8.1.1",
+    "style-loader": "^4.0.0",
+    "swc-loader": "^0.2.6",
+    "tailwindcss": "^4.1.5",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.8.3",
+    "webpack": "^5.99.7",
+    "webpack-cli": "^6.0.1",
+    "webpack-manifest-plugin": "^5.0.1"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.1.5",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@types/react-router-dom": "^5.3.3",
+    "@types/three": "^0.177.0",
+    "axios": "^1.9.0",
+    "css-minimizer-webpack-plugin": "^8.0.0",
+    "framer-motion": "^12.18.1",
+    "html-webpack-plugin": "^5.6.3",
+    "lodash": "^4.17.21",
+    "mini-css-extract-plugin": "^2.9.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-icons": "^5.5.0",
+    "terser-webpack-plugin": "^5.3.14",
+    "webpack-bundle-analyzer": "^4.10.2"
+  }
+}
