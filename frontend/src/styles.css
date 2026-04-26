@@ -11,4 +11,6 @@ body,
 
 body {
   margin: 0;
+  background: #f1f5f9;
+  -webkit-tap-highlight-color: transparent;
 }

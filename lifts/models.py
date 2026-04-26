@@ -52,6 +52,9 @@ class SavedLift(models.Model):
         blank=True,
         related_name="variations",
     )
+    default_sets = models.PositiveIntegerField(null=True, blank=True)
+    default_reps = models.PositiveIntegerField(null=True, blank=True)
+    default_weight = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -62,9 +65,22 @@ class LiftTemplate(models.Model):
 
 class TemplateLift(models.Model):
     template = models.ForeignKey(LiftTemplate, related_name="lifts", on_delete=models.CASCADE)
+    saved_lift = models.ForeignKey(
+        SavedLift,
+        related_name="template_lifts",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
+    sets = models.PositiveIntegerField(null=True, blank=True)
+    reps = models.PositiveIntegerField(null=True, blank=True)
+    weight = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     sort_order = models.IntegerField(default=0, help_text="Order of the lift within the day, starting from 0")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("sort_order", "id")
 
 
 class TrainingDay(models.Model):
@@ -72,6 +88,8 @@ class TrainingDay(models.Model):
     INTENSITY_MEDIUM = "medium"
     INTENSITY_HIGH = "high"
     INTENSITY_NON_RELEVANT = "non-relevant"
+    STATUS_PLANNED = "planned"
+    STATUS_COMPLETED = "completed"
 
     INTENSITY_CHOICES = [
         (INTENSITY_MINOR, "Minor"),
@@ -79,9 +97,14 @@ class TrainingDay(models.Model):
         (INTENSITY_HIGH, "High"),
         (INTENSITY_NON_RELEVANT, "Non-relevant"),
     ]
+    STATUS_CHOICES = [
+        (STATUS_PLANNED, "Planned"),
+        (STATUS_COMPLETED, "Completed"),
+    ]
 
     date = models.DateField(unique=True)
     name = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_COMPLETED)
     intensity = models.CharField(max_length=20, choices=INTENSITY_CHOICES, default=INTENSITY_NON_RELEVANT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -89,6 +112,13 @@ class TrainingDay(models.Model):
 
 class TrainingDayLift(models.Model):
     training_day = models.ForeignKey(TrainingDay, related_name="lifts", on_delete=models.CASCADE)
+    saved_lift = models.ForeignKey(
+        SavedLift,
+        related_name="training_day_lifts",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
     sets = models.PositiveIntegerField(null=True, blank=True)
     reps = models.PositiveIntegerField(null=True, blank=True)

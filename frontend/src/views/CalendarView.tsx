@@ -7,12 +7,15 @@ import {
   FaMedal,
   FaPen,
   FaPlus,
+  FaSave,
   FaSearch,
   FaStickyNote,
   FaTrashAlt,
 } from "react-icons/fa";
 
 import {
+  deleteTrainingDay,
+  fetchSuggestDayAvailability,
   fetchLiftTemplate,
   fetchSavedLifts,
   fetchTrainingDays,
@@ -20,7 +23,12 @@ import {
   LiftTemplateDay,
   SavedLift,
   saveTrainingDay,
+  SuggestedDay,
+  SuggestDayAvailability,
+  suggestDay,
   TrainingDay,
+  UserProfile,
+  TrainingDayStatus,
   TrainingIntensity,
 } from "../api/lifts";
 import { SaveState } from "../types";
@@ -37,26 +45,35 @@ type DraftLiftRow = {
 
 type DraftLift = {
   key: string;
+  savedLiftId: number | null;
   name: string;
   rows: DraftLiftRow[];
 };
 
 type GroupedTrainingLift = {
+  savedLiftId: number | null;
   name: string;
-  rows: Array<{ sets: number | null; reps: number | null; weight: number | null; isPr: boolean; notes: string }>;
+  rows: Array<{
+    sets: number | null;
+    reps: number | null;
+    weight: number | null;
+    isPr: boolean;
+    notes: string;
+  }>;
 };
 
 type NotesModalState =
   | { mode: "edit"; liftKey: string; rowKey: string; title: string }
   | { mode: "view"; title: string; notes: string };
 
-type AutosaveState =
-  | { kind: "idle" }
-  | { kind: "dirty" }
-  | { kind: "saving" }
-  | { kind: "saved"; at: number }
-  | { kind: "blocked"; message: string }
-  | { kind: "error"; message: string };
+type SuggestHistoryWindow = "none" | "1w" | "4w" | "12w";
+
+type SuggestDayModalState = {
+  historyWindow: SuggestHistoryWindow;
+  wantedDayType: string;
+  isLoading: boolean;
+  error: string | null;
+};
 
 const INTENSITY_OPTIONS: Array<{ value: TrainingIntensity; label: string }> = [
   { value: "minor", label: "Minor" },
@@ -64,6 +81,20 @@ const INTENSITY_OPTIONS: Array<{ value: TrainingIntensity; label: string }> = [
   { value: "high", label: "High" },
   { value: "non-relevant", label: "Non-relevant" },
 ];
+
+const STATUS_OPTIONS: Array<{ value: TrainingDayStatus; label: string }> = [
+  { value: "planned", label: "Planned" },
+  { value: "completed", label: "Completed" },
+];
+
+const SUGGEST_HISTORY_OPTIONS: Array<{ value: SuggestHistoryWindow; label: string }> = [
+  { value: "none", label: "No history" },
+  { value: "1w", label: "1 week" },
+  { value: "4w", label: "4 weeks" },
+  { value: "12w", label: "12 weeks" },
+];
+
+const DEFAULT_SUGGEST_DAY_TYPES = ["Push", "Pull", "Legs", "Core", "Upper", "Lower", "Full Body", "Recovery"];
 
 const INTENSITY_DAY_BADGE_CLASS: Record<TrainingIntensity, string> = {
   minor: "bg-emerald-100 text-emerald-800",
@@ -79,11 +110,14 @@ const INTENSITY_DAY_CELL_CLASS: Record<TrainingIntensity, string> = {
   "non-relevant": "border-slate-200 bg-slate-100",
 };
 
-const INTENSITY_DOT_CLASS: Record<TrainingIntensity, string> = {
-  minor: "bg-emerald-500",
-  medium: "bg-amber-500",
-  high: "bg-rose-500",
-  "non-relevant": "bg-slate-500",
+const STATUS_BADGE_CLASS: Record<TrainingDayStatus, string> = {
+  planned: "bg-sky-100 text-sky-800",
+  completed: "bg-slate-900 text-white",
+};
+
+const STATUS_MOBILE_LABEL: Record<TrainingDayStatus, string> = {
+  planned: "Plan",
+  completed: "Done",
 };
 
 function monthParam(date: Date): string {
@@ -103,7 +137,13 @@ function nextKey(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function createDraftLiftRow(sets = "", reps = "", weight = "", isPr = false, notes = ""): DraftLiftRow {
+function createDraftLiftRow(
+  sets = "",
+  reps = "",
+  weight = "",
+  isPr = false,
+  notes = ""
+): DraftLiftRow {
   return {
     key: nextKey(),
     sets,
@@ -114,12 +154,27 @@ function createDraftLiftRow(sets = "", reps = "", weight = "", isPr = false, not
   };
 }
 
-function createDraftLift(name = "", rows: DraftLiftRow[] = [createDraftLiftRow()]): DraftLift {
+function createDraftLift(
+  name = "",
+  savedLiftId: number | null = null,
+  rows: DraftLiftRow[] = [createDraftLiftRow()]
+): DraftLift {
   return {
     key: nextKey(),
+    savedLiftId,
     name,
     rows: rows.length > 0 ? rows : [createDraftLiftRow()],
   };
+}
+
+function createDraftLiftFromSaved(savedLift: SavedLift): DraftLift {
+  return createDraftLift(savedLift.name, savedLift.id, [
+    createDraftLiftRow(
+      savedLift.defaultSets !== null ? String(savedLift.defaultSets) : "",
+      savedLift.defaultReps !== null ? String(savedLift.defaultReps) : "",
+      savedLift.defaultWeight !== null ? String(savedLift.defaultWeight) : ""
+    ),
+  ]);
 }
 
 function parseOptionalInt(value: string, fieldName: string): number | null {
@@ -181,7 +236,7 @@ function formatLiftHistoryRow(
     parts.push(`${row.weight} ${weightUnit}`);
   }
 
-  return parts.length > 0 ? parts.join(" • ") : "No sets/reps/weight logged";
+  return parts.length > 0 ? parts.join(" • ") : "No set targets stored";
 }
 
 function groupTrainingDayLifts(lifts: TrainingDay["lifts"]): GroupedTrainingLift[] {
@@ -189,16 +244,19 @@ function groupTrainingDayLifts(lifts: TrainingDay["lifts"]): GroupedTrainingLift
   const groupOrder: string[] = [];
 
   for (const lift of lifts) {
-    const normalized = lift.name.trim().toLowerCase();
-    if (!groups.has(normalized)) {
-      groups.set(normalized, {
+    const normalizedName = lift.name.trim().toLowerCase();
+    const key = `${lift.savedLiftId ?? "custom"}:${normalizedName}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        savedLiftId: lift.savedLiftId,
         name: lift.name.trim(),
         rows: [],
       });
-      groupOrder.push(normalized);
+      groupOrder.push(key);
     }
 
-    groups.get(normalized)?.rows.push({
+    groups.get(key)?.rows.push({
       sets: lift.sets,
       reps: lift.reps,
       weight: lift.weight,
@@ -212,42 +270,80 @@ function groupTrainingDayLifts(lifts: TrainingDay["lifts"]): GroupedTrainingLift
     .filter((group): group is GroupedTrainingLift => Boolean(group));
 }
 
-function uniqueSavedLiftNames(savedLifts: SavedLift[]): string[] {
-  const seen = new Set<string>();
-  const names: string[] = [];
+function dayCardClass(day: TrainingDay | null): string {
+  if (!day) {
+    return "border-slate-200 bg-white";
+  }
 
-  for (const lift of savedLifts) {
-    const trimmed = lift.name.trim();
-    const normalized = trimmed.toLowerCase();
-    if (!trimmed || seen.has(normalized)) {
+  if (day.status === "planned") {
+    return "border-sky-200 bg-sky-50";
+  }
+
+  return INTENSITY_DAY_CELL_CLASS[day.intensity];
+}
+
+function dayBadgeClass(day: TrainingDay): string {
+  if (day.status === "planned") {
+    return "bg-sky-100 text-sky-800";
+  }
+
+  return INTENSITY_DAY_BADGE_CLASS[day.intensity];
+}
+
+function todayIsoString(today: Date): string {
+  return [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, "0"),
+    String(today.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function defaultStatusForDate(dateIso: string, todayIso: string): TrainingDayStatus {
+  return dateIso > todayIso ? "planned" : "completed";
+}
+
+function compactCalendarLabel(name: string, maxLength = 16): string {
+  const trimmed = name.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, maxLength - 1)}…`;
+}
+
+function buildSuggestDayTypeOptions(presetDays: LiftTemplateDay[]): string[] {
+  const seen = new Set<string>();
+  const options: string[] = [];
+
+  for (const presetDay of presetDays) {
+    const trimmedName = presetDay.name.trim();
+    const normalized = trimmedName.toLowerCase();
+    if (!trimmedName || seen.has(normalized)) {
       continue;
     }
 
     seen.add(normalized);
-    names.push(trimmed);
+    options.push(trimmedName);
   }
 
-  return names;
+  for (const defaultType of DEFAULT_SUGGEST_DAY_TYPES) {
+    const normalized = defaultType.toLowerCase();
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    options.push(defaultType);
+  }
+
+  return options;
 }
 
-function buildEditorFingerprint(dayName: string, intensity: TrainingIntensity, draftLifts: DraftLift[]): string {
-  return JSON.stringify({
-    dayName,
-    intensity,
-    lifts: draftLifts.map((lift) => ({
-      name: lift.name,
-      rows: lift.rows.map((row) => ({
-        sets: row.sets,
-        reps: row.reps,
-        weight: row.weight,
-        isPr: row.isPr,
-        notes: row.notes,
-      })),
-    })),
-  });
+function isSuggestionProfileComplete(profile: UserProfile | null): boolean {
+  return Boolean(profile && profile.height !== null && profile.weight !== null && profile.gender !== "unspecified");
 }
 
 function buildTrainingDayLiftsPayload(draftLifts: DraftLift[]): Array<{
+  savedLiftId: number | null;
   name: string;
   sets: number | null;
   reps: number | null;
@@ -287,6 +383,7 @@ function buildTrainingDayLiftsPayload(draftLifts: DraftLift[]): Array<{
           ];
 
     return rowsToPersist.map((row) => ({
+      savedLiftId: lift.savedLiftId,
       name: trimmedLiftName,
       sets: row.sets,
       reps: row.reps,
@@ -297,67 +394,44 @@ function buildTrainingDayLiftsPayload(draftLifts: DraftLift[]): Array<{
   });
 }
 
-function autosaveStatusDetails(state: AutosaveState): { message: string; className: string } {
-  if (state.kind === "dirty") {
-    return { message: "Unsaved changes", className: "text-amber-700" };
-  }
-
-  if (state.kind === "saving") {
-    return { message: "Autosaving...", className: "text-sky-700" };
-  }
-
-  if (state.kind === "saved") {
-    return {
-      message: `All changes saved at ${new Date(state.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
-      className: "text-emerald-700",
-    };
-  }
-
-  if (state.kind === "blocked") {
-    return { message: state.message, className: "text-amber-700" };
-  }
-
-  if (state.kind === "error") {
-    return { message: state.message, className: "text-rose-700" };
-  }
-
-  return { message: "Autosave ready", className: "text-slate-500" };
-}
-
 export function CalendarView() {
+  const editorSectionRef = useRef<HTMLElement | null>(null);
   const [today] = useState(() => new Date());
   const [activeMonth, setActiveMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const [selectedDay, setSelectedDay] = useState<number>(() => today.getDate());
   const [trainingDaysByDate, setTrainingDaysByDate] = useState<Record<string, TrainingDay>>({});
-  const [favoriteDays, setFavoriteDays] = useState<LiftTemplateDay[]>([]);
+  const [presetDays, setPresetDays] = useState<LiftTemplateDay[]>([]);
   const [savedLifts, setSavedLifts] = useState<SavedLift[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [weightUnit, setWeightUnit] = useState<"kg" | "lb">("kg");
   const [referenceError, setReferenceError] = useState<string | null>(null);
+  const [suggestDayAvailability, setSuggestDayAvailability] = useState<SuggestDayAvailability | null>(null);
+  const [suggestDayModal, setSuggestDayModal] = useState<SuggestDayModalState | null>(null);
+  const [suggestionSummary, setSuggestionSummary] = useState<string | null>(null);
 
+  const [editorOpen, setEditorOpen] = useState(false);
   const [dayName, setDayName] = useState("");
+  const [dayStatus, setDayStatus] = useState<TrainingDayStatus>("completed");
   const [intensity, setIntensity] = useState<TrainingIntensity>("non-relevant");
   const [draftLifts, setDraftLifts] = useState<DraftLift[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [newLiftName, setNewLiftName] = useState("");
-  const [selectedFavoriteDayId, setSelectedFavoriteDayId] = useState<string>("");
-  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
-
-  const [screen, setScreen] = useState<"calendar" | "training">("calendar");
-  const [calendarState, setCalendarState] = useState<SaveState>({ kind: "idle" });
   const [editorState, setEditorState] = useState<SaveState>({ kind: "idle" });
+  const [calendarState, setCalendarState] = useState<SaveState>({ kind: "idle" });
   const [notesModal, setNotesModal] = useState<NotesModalState | null>(null);
-  const [autosaveState, setAutosaveState] = useState<AutosaveState>({ kind: "idle" });
-  const [lastAutosaveFingerprint, setLastAutosaveFingerprint] = useState<string | null>(null);
-  const autosaveRequestIdRef = useRef(0);
+  const [deletingDayId, setDeletingDayId] = useState<number | null>(null);
 
   const cells = useMemo(() => getCalendarCells(activeMonth), [activeMonth]);
-
   const selectedDateIso = useMemo(() => isoDateForDay(activeMonth, selectedDay), [activeMonth, selectedDay]);
+  const todayIso = useMemo(() => todayIsoString(today), [today]);
   const selectedTrainingDay = trainingDaysByDate[selectedDateIso] ?? null;
 
   const selectedTrainingLiftGroups = useMemo(
     () => (selectedTrainingDay ? groupTrainingDayLifts(selectedTrainingDay.lifts) : []),
     [selectedTrainingDay]
   );
+  const suggestDayTypeOptions = useMemo(() => buildSuggestDayTypeOptions(presetDays), [presetDays]);
+  const suggestionProfileComplete = useMemo(() => isSuggestionProfileComplete(userProfile), [userProfile]);
 
   const currentEditorNote = useMemo(() => {
     if (!notesModal || notesModal.mode !== "edit") {
@@ -369,29 +443,47 @@ export function CalendarView() {
     return row?.notes ?? "";
   }, [draftLifts, notesModal]);
 
-  const savedLiftNames = useMemo(() => uniqueSavedLiftNames(savedLifts), [savedLifts]);
-
-  const matchingSavedLiftNames = useMemo(() => {
+  const matchingSavedLifts = useMemo(() => {
     const query = newLiftName.trim().toLowerCase();
     if (!query) {
       return [];
     }
 
-    return savedLiftNames
-      .filter((name) => name.toLowerCase().includes(query))
+    return savedLifts
+      .filter((lift) => lift.name.toLowerCase().includes(query))
+      .sort((left, right) => left.name.localeCompare(right.name))
       .slice(0, 6);
-  }, [savedLiftNames, newLiftName]);
+  }, [newLiftName, savedLifts]);
 
-  const editorFingerprint = useMemo(
-    () => buildEditorFingerprint(dayName, intensity, draftLifts),
-    [dayName, intensity, draftLifts]
-  );
+  const suggestDayDisabledReason = useMemo(() => {
+    if (!suggestionProfileComplete) {
+      return "Save weight, height, and gender in Settings first.";
+    }
+
+    if (savedLifts.length === 0) {
+      return "Save some lifts before using Suggest day.";
+    }
+
+    if (!suggestDayAvailability) {
+      return "Checking Ollama availability...";
+    }
+
+    if (!suggestDayAvailability.available) {
+      return suggestDayAvailability.reason ?? "gemma4 is not available in Ollama.";
+    }
+
+    return null;
+  }, [savedLifts.length, suggestDayAvailability, suggestionProfileComplete]);
 
   useEffect(() => {
     const isCurrentMonth =
       activeMonth.getFullYear() === today.getFullYear() && activeMonth.getMonth() === today.getMonth();
     setSelectedDay(isCurrentMonth ? today.getDate() : 1);
-    setScreen("calendar");
+    setEditorOpen(false);
+    setEditorState({ kind: "idle" });
+    setNotesModal(null);
+    setSuggestDayModal(null);
+    setSuggestionSummary(null);
   }, [activeMonth, today]);
 
   useEffect(() => {
@@ -399,14 +491,20 @@ export function CalendarView() {
 
     const loadReferenceData = async () => {
       try {
-        const [days, lifts, userProfile] = await Promise.all([fetchLiftTemplate(), fetchSavedLifts(), fetchUserProfile()]);
+        const [templates, lifts, loadedUserProfile] = await Promise.all([
+          fetchLiftTemplate(),
+          fetchSavedLifts(),
+          fetchUserProfile(),
+        ]);
+
         if (!isMounted) {
           return;
         }
 
-        setFavoriteDays(days);
+        setPresetDays(templates);
         setSavedLifts(lifts);
-        setWeightUnit(userProfile.weightUnit);
+        setUserProfile(loadedUserProfile);
+        setWeightUnit(loadedUserProfile.weightUnit);
         setReferenceError(null);
       } catch (error) {
         if (!isMounted) {
@@ -415,6 +513,25 @@ export function CalendarView() {
 
         const message = error instanceof Error ? error.message : "Failed to load settings data.";
         setReferenceError(message);
+      }
+
+      try {
+        const availability = await fetchSuggestDayAvailability();
+        if (!isMounted) {
+          return;
+        }
+        setSuggestDayAvailability(availability);
+      } catch (error) {
+        if (!isMounted) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : "Suggest day is unavailable right now.";
+        setSuggestDayAvailability({
+          available: false,
+          modelName: null,
+          reason: message,
+          profileComplete: false,
+        });
       }
     };
 
@@ -460,127 +577,41 @@ export function CalendarView() {
   }, [activeMonth]);
 
   useEffect(() => {
-    if (screen !== "training" || editorMode !== "edit" || editorState.kind === "saving") {
+    if (!editorOpen) {
       return;
     }
 
-    if (!lastAutosaveFingerprint) {
-      return;
-    }
+    editorSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [editorOpen]);
 
-    if (editorFingerprint === lastAutosaveFingerprint) {
-      setAutosaveState((current) =>
-        current.kind === "dirty" || current.kind === "error" || current.kind === "blocked"
-          ? { kind: "saved", at: Date.now() }
-          : current
-      );
-      return;
-    }
-
-    setAutosaveState((current) => (current.kind === "saving" ? current : { kind: "dirty" }));
-
-    const timeoutId = window.setTimeout(async () => {
-      const trimmedDayName = dayName.trim();
-      if (!trimmedDayName) {
-        setAutosaveState({ kind: "blocked", message: "Autosave paused: day name is required." });
-        return;
-      }
-
-      let liftsPayload: ReturnType<typeof buildTrainingDayLiftsPayload>;
-      try {
-        liftsPayload = buildTrainingDayLiftsPayload(draftLifts);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Invalid input.";
-        setAutosaveState({ kind: "blocked", message: `Autosave paused: ${message}` });
-        return;
-      }
-
-      const requestId = autosaveRequestIdRef.current + 1;
-      autosaveRequestIdRef.current = requestId;
-      setAutosaveState({ kind: "saving" });
-
-      try {
-        const saved = await saveTrainingDay({
-          date: selectedDateIso,
-          name: trimmedDayName,
-          intensity,
-          lifts: liftsPayload,
-        });
-
-        if (autosaveRequestIdRef.current !== requestId) {
-          return;
-        }
-
-        setTrainingDaysByDate((current) => ({
-          ...current,
-          [saved.date]: saved,
-        }));
-        setLastAutosaveFingerprint(editorFingerprint);
-        setAutosaveState({ kind: "saved", at: Date.now() });
-      } catch (error) {
-        if (autosaveRequestIdRef.current !== requestId) {
-          return;
-        }
-        const message = error instanceof Error ? error.message : "Autosave failed.";
-        setAutosaveState({ kind: "error", message: `Autosave failed: ${message}` });
-      }
-    }, 800);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    dayName,
-    draftLifts,
-    editorFingerprint,
-    editorMode,
-    editorState.kind,
-    intensity,
-    lastAutosaveFingerprint,
-    screen,
-    selectedDateIso,
-  ]);
-
-  const resetAutosaveTracking = (state: AutosaveState = { kind: "idle" }) => {
-    autosaveRequestIdRef.current += 1;
-    setLastAutosaveFingerprint(null);
-    setAutosaveState(state);
-  };
-
-  const resetEditor = () => {
-    setDayName("");
-    setIntensity("non-relevant");
-    setDraftLifts([]);
+  const closeEditor = () => {
+    setEditorOpen(false);
+    setEditorState({ kind: "idle" });
+    setNotesModal(null);
+    setSelectedPresetId("");
     setNewLiftName("");
-    setSelectedFavoriteDayId("");
-    setEditorMode("create");
+    setSuggestionSummary(null);
+  };
+
+  const openEditorForNewDay = (status = defaultStatusForDate(selectedDateIso, todayIso)) => {
+    setDayName(selectedTrainingDay?.name ?? "");
+    setDayStatus(status);
+    setIntensity(selectedTrainingDay?.intensity ?? "non-relevant");
+    setDraftLifts([]);
+    setSelectedPresetId("");
+    setNewLiftName("");
     setEditorState({ kind: "idle" });
     setNotesModal(null);
-    resetAutosaveTracking();
+    setSuggestionSummary(null);
+    setEditorOpen(true);
   };
 
-  const handleSelectDay = (day: number) => {
-    setSelectedDay(day);
-    setScreen("calendar");
-    setEditorState({ kind: "idle" });
-    setNotesModal(null);
-    resetAutosaveTracking();
-  };
-
-  const handleStartTraining = () => {
-    resetEditor();
-    setScreen("training");
-  };
-
-  const handleEditTraining = () => {
-    if (!selectedTrainingDay) {
-      return;
-    }
-
-    const grouped = groupTrainingDayLifts(selectedTrainingDay.lifts);
+  const openEditorForExistingDay = (day: TrainingDay, nextStatus: TrainingDayStatus = day.status) => {
+    const grouped = groupTrainingDayLifts(day.lifts);
     const nextDraftLifts = grouped.map((lift) =>
       createDraftLift(
         lift.name,
+        lift.savedLiftId,
         lift.rows.map((row) =>
           createDraftLiftRow(
             row.sets !== null ? String(row.sets) : "",
@@ -593,41 +624,146 @@ export function CalendarView() {
       )
     );
 
-    setDayName(selectedTrainingDay.name);
-    setIntensity(selectedTrainingDay.intensity);
+    setDayName(day.name);
+    setDayStatus(nextStatus);
+    setIntensity(day.intensity);
     setDraftLifts(nextDraftLifts);
+    setSelectedPresetId("");
     setNewLiftName("");
-    setSelectedFavoriteDayId("");
-    setEditorMode("edit");
     setEditorState({ kind: "idle" });
     setNotesModal(null);
-    autosaveRequestIdRef.current += 1;
-    setLastAutosaveFingerprint(buildEditorFingerprint(selectedTrainingDay.name, selectedTrainingDay.intensity, nextDraftLifts));
-    setAutosaveState({ kind: "saved", at: Date.now() });
-    setScreen("training");
+    setSuggestionSummary(null);
+    setEditorOpen(true);
   };
 
-  const handleApplyFavoriteDay = () => {
-    if (!selectedFavoriteDayId) {
-      setEditorState({ kind: "error", message: "Select a favorite day first." });
+  const handleApplyPreset = () => {
+    if (!selectedPresetId) {
+      setEditorState({ kind: "error", message: "Choose a preset day first." });
       return;
     }
 
-    const favoriteDay = favoriteDays.find((day) => day.id === Number(selectedFavoriteDayId));
-    if (!favoriteDay) {
-      setEditorState({ kind: "error", message: "Favorite day not found." });
+    const presetDay = presetDays.find((day) => day.id === Number(selectedPresetId));
+    if (!presetDay) {
+      setEditorState({ kind: "error", message: "Preset day not found." });
       return;
     }
 
-    setDraftLifts(favoriteDay.lifts.map((lift) => createDraftLift(lift.name)));
-    setDayName((current) => (current.trim() ? current : favoriteDay.name));
-    setEditorState({ kind: "success", message: `Loaded ${favoriteDay.name}.` });
+    const nextDraftLifts = presetDay.lifts.map((lift) => {
+      const matchingSavedLift = savedLifts.find((savedLift) => savedLift.id === lift.savedLiftId);
+      return createDraftLift(
+        matchingSavedLift?.name ?? lift.name,
+        lift.savedLiftId,
+        [
+          createDraftLiftRow(
+            lift.sets !== null ? String(lift.sets) : "",
+            lift.reps !== null ? String(lift.reps) : "",
+            lift.weight !== null ? String(lift.weight) : ""
+          ),
+        ]
+      );
+    });
+
+    setDraftLifts(nextDraftLifts);
+    setDayName((current) => (current.trim() ? current : presetDay.name));
+    setEditorState({ kind: "success", message: `${presetDay.name} loaded.` });
+  };
+
+  const openSuggestDayModal = () => {
+    if (suggestDayDisabledReason) {
+      return;
+    }
+
+    setSuggestDayModal({
+      historyWindow: "4w",
+      wantedDayType: suggestDayTypeOptions[0] ?? "Push",
+      isLoading: false,
+      error: null,
+    });
+  };
+
+  const applySuggestedDayToEditor = (suggestedDay: SuggestedDay) => {
+    const nextDraftLifts = suggestedDay.lifts.map((lift) =>
+      createDraftLift(
+        lift.name,
+        lift.savedLiftId,
+        [
+          createDraftLiftRow(
+            lift.sets !== null ? String(lift.sets) : "",
+            lift.reps !== null ? String(lift.reps) : "",
+            lift.weight !== null ? String(lift.weight) : "",
+            false,
+            lift.notes
+          ),
+        ]
+      )
+    );
+
+    setDayName(suggestedDay.name);
+    setDayStatus(suggestedDay.status);
+    setIntensity(suggestedDay.intensity);
+    setDraftLifts(nextDraftLifts);
+    setSelectedPresetId("");
+    setNewLiftName("");
+    setEditorState({ kind: "success", message: "Suggestion loaded. Review and save when ready." });
+    setSuggestionSummary(suggestedDay.summary || null);
+    setSuggestDayModal(null);
+    setNotesModal(null);
+    setEditorOpen(true);
+  };
+
+  const handleSuggestDay = async () => {
+    if (!suggestDayModal) {
+      return;
+    }
+
+    try {
+      setSuggestDayModal((current) =>
+        current
+          ? {
+              ...current,
+              isLoading: true,
+              error: null,
+            }
+          : current
+      );
+
+      const suggestedDay = await suggestDay({
+        date: selectedDateIso,
+        historyWindow: suggestDayModal.historyWindow,
+        wantedDayType: suggestDayModal.wantedDayType,
+      });
+
+      applySuggestedDayToEditor(suggestedDay);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to suggest a day.";
+      setSuggestDayModal((current) =>
+        current
+          ? {
+              ...current,
+              isLoading: false,
+              error: message,
+            }
+          : current
+      );
+    }
+  };
+
+  const handleAddLiftFromSaved = (savedLift: SavedLift) => {
+    setDraftLifts((current) => [...current, createDraftLiftFromSaved(savedLift)]);
+    setNewLiftName("");
+    setEditorState({ kind: "idle" });
   };
 
   const handleAddLift = () => {
     const trimmedName = newLiftName.trim();
     if (!trimmedName) {
       setEditorState({ kind: "error", message: "Lift name is required." });
+      return;
+    }
+
+    const exactSavedLift = savedLifts.find((lift) => lift.name.trim().toLowerCase() === trimmedName.toLowerCase());
+    if (exactSavedLift) {
+      handleAddLiftFromSaved(exactSavedLift);
       return;
     }
 
@@ -638,14 +774,7 @@ export function CalendarView() {
 
   const updateDraftLiftName = (liftKey: string, value: string) => {
     setDraftLifts((current) =>
-      current.map((lift) =>
-        lift.key === liftKey
-          ? {
-              ...lift,
-              name: value,
-            }
-          : lift
-      )
+      current.map((lift) => (lift.key === liftKey ? { ...lift, name: value, savedLiftId: lift.savedLiftId } : lift))
     );
   };
 
@@ -673,14 +802,7 @@ export function CalendarView() {
         lift.key === liftKey
           ? {
               ...lift,
-              rows: lift.rows.map((row) =>
-                row.key === rowKey
-                  ? {
-                      ...row,
-                      [field]: value,
-                    }
-                  : row
-              ),
+              rows: lift.rows.map((row) => (row.key === rowKey ? { ...row, [field]: value } : row)),
             }
           : lift
       )
@@ -693,14 +815,7 @@ export function CalendarView() {
         lift.key === liftKey
           ? {
               ...lift,
-              rows: lift.rows.map((row) =>
-                row.key === rowKey
-                  ? {
-                      ...row,
-                      isPr,
-                    }
-                  : row
-              ),
+              rows: lift.rows.map((row) => (row.key === rowKey ? { ...row, isPr } : row)),
             }
           : lift
       )
@@ -713,14 +828,7 @@ export function CalendarView() {
         lift.key === liftKey
           ? {
               ...lift,
-              rows: lift.rows.map((row) =>
-                row.key === rowKey
-                  ? {
-                      ...row,
-                      notes,
-                    }
-                  : row
-              ),
+              rows: lift.rows.map((row) => (row.key === rowKey ? { ...row, notes } : row)),
             }
           : lift
       )
@@ -757,35 +865,58 @@ export function CalendarView() {
   const handleSaveTrainingDay = async () => {
     const trimmedDayName = dayName.trim();
     if (!trimmedDayName) {
-      setEditorState({ kind: "error", message: "Training day name is required." });
+      setEditorState({ kind: "error", message: "Day name is required." });
       return;
     }
 
     try {
       const liftsPayload = buildTrainingDayLiftsPayload(draftLifts);
 
-      autosaveRequestIdRef.current += 1;
       setEditorState({ kind: "saving" });
-      const saved = await saveTrainingDay({
+      const savedDay = await saveTrainingDay({
         date: selectedDateIso,
         name: trimmedDayName,
+        status: dayStatus,
         intensity,
         lifts: liftsPayload,
       });
 
       setTrainingDaysByDate((current) => ({
         ...current,
-        [saved.date]: saved,
+        [savedDay.date]: savedDay,
       }));
-      setNotesModal(null);
-      setScreen("calendar");
-      setEditorMode("create");
       setEditorState({ kind: "idle" });
-      setCalendarState({ kind: "success", message: "Training day saved." });
-      resetAutosaveTracking();
+      setCalendarState({
+        kind: "success",
+        message: dayStatus === "planned" ? "Planned day saved." : "Lift day saved.",
+      });
+      closeEditor();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to save training day.";
+      const message = error instanceof Error ? error.message : "Failed to save day.";
       setEditorState({ kind: "error", message });
+    }
+  };
+
+  const handleDeleteDay = async () => {
+    if (!selectedTrainingDay) {
+      return;
+    }
+
+    try {
+      setDeletingDayId(selectedTrainingDay.id);
+      await deleteTrainingDay(selectedTrainingDay.id);
+      setTrainingDaysByDate((current) => {
+        const next = { ...current };
+        delete next[selectedDateIso];
+        return next;
+      });
+      setCalendarState({ kind: "success", message: "Day deleted." });
+      closeEditor();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete day.";
+      setCalendarState({ kind: "error", message });
+    } finally {
+      setDeletingDayId(null);
     }
   };
 
@@ -797,17 +928,113 @@ export function CalendarView() {
     updateDraftLiftRowNotes(notesModal.liftKey, notesModal.rowKey, value);
   };
 
-  const autosaveStatus = editorMode === "edit" ? autosaveStatusDetails(autosaveState) : null;
+  const suggestDayModalElement = suggestDayModal ? (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/55 p-3 sm:items-center sm:p-4">
+      <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-4 shadow-xl sm:p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Suggest Day</p>
+            <h3 className="text-lg font-semibold text-slate-900">Build a draft with Gemma 4</h3>
+            <p className="text-sm text-slate-600">
+              We’ll use your saved profile, lift library, preset days, and selected history window to suggest a day for{" "}
+              {selectedDateLabel(selectedDateIso)}.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSuggestDayModal(null)}
+            className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <label className="space-y-1 text-sm text-slate-700">
+            <span>How much history should be used?</span>
+            <select
+              value={suggestDayModal.historyWindow}
+              onChange={(event) =>
+                setSuggestDayModal((current) =>
+                  current
+                    ? {
+                        ...current,
+                        historyWindow: event.target.value as SuggestHistoryWindow,
+                      }
+                    : current
+                )
+              }
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+            >
+              {SUGGEST_HISTORY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1 text-sm text-slate-700">
+            <span>What kind of day do you want?</span>
+            <select
+              value={suggestDayModal.wantedDayType}
+              onChange={(event) =>
+                setSuggestDayModal((current) =>
+                  current
+                    ? {
+                        ...current,
+                        wantedDayType: event.target.value,
+                      }
+                    : current
+                )
+              }
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+            >
+              {suggestDayTypeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {suggestDayAvailability?.modelName && (
+            <p className="text-xs text-slate-500">Using Ollama model `{suggestDayAvailability.modelName}`.</p>
+          )}
+          {suggestDayModal.error && <p className="text-sm text-rose-600">{suggestDayModal.error}</p>}
+        </div>
+
+        <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={() => setSuggestDayModal(null)}
+            className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSuggestDay}
+            disabled={suggestDayModal.isLoading}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500"
+          >
+            <FaSave />
+            {suggestDayModal.isLoading ? "Suggesting..." : "Suggest day"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   const notesModalElement = notesModal ? (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
+      <div className="w-full max-w-md rounded-[24px] border border-slate-200 bg-white p-4 shadow-xl">
         <div className="flex items-start justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-900">{notesModal.title}</h3>
           <button
             type="button"
             onClick={() => setNotesModal(null)}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
           >
             Close
           </button>
@@ -820,13 +1047,13 @@ export function CalendarView() {
               onChange={(event) => handleEditorNoteChange(event.target.value)}
               rows={5}
               placeholder="Add context for anything unusual about this lift row..."
-              className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-sky-200 focus:ring-2"
+              className="w-full resize-y rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-sky-200 focus:ring-2"
             />
             <div className="flex justify-end">
               <button
                 type="button"
                 onClick={() => setNotesModal(null)}
-                className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700"
               >
                 Done
               </button>
@@ -839,7 +1066,7 @@ export function CalendarView() {
               <button
                 type="button"
                 onClick={() => setNotesModal(null)}
-                className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700"
               >
                 Close
               </button>
@@ -850,146 +1077,265 @@ export function CalendarView() {
     </div>
   ) : null;
 
-  if (screen === "training") {
-    return (
-      <>
-        <section className="mx-auto w-full max-w-4xl space-y-2.5 rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-orange-50 p-2 shadow-sm sm:space-y-4 sm:p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
-              <FaCalendarAlt className="text-sky-600" />
-              {editorMode === "edit" ? "Edit Training Day" : "Start Training"}
-            </h2>
+  const editorSaveLabel =
+    editorState.kind === "saving" ? "Saving..." : dayStatus === "planned" ? "Save planned day" : "Save completed day";
+
+  const editorElement = editorOpen ? (
+    <section
+      ref={editorSectionRef}
+      className="space-y-4 rounded-[28px] border border-sky-200 bg-[linear-gradient(180deg,#f8fcff_0%,#ffffff_55%,#fff8ef_100%)] p-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] shadow-sm sm:p-6 sm:pb-6"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-2">
+          <p className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white">
+            <FaCalendarAlt />
+            Day Editor
+          </p>
+          <h2 className="text-xl font-semibold text-slate-900">{selectedDateLabel(selectedDateIso)}</h2>
+          <p className="text-sm text-slate-600">
+            Save this date as a future plan or as a completed lift day. The actions stay pinned on mobile so you can still save while the keyboard is open.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {selectedTrainingDay && (
             <button
               type="button"
-              onClick={() => {
-                setScreen("calendar");
-                setEditorState({ kind: "idle" });
-                setNotesModal(null);
-                resetAutosaveTracking();
-              }}
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-slate-100 sm:px-3 sm:py-2"
+              onClick={handleDeleteDay}
+              disabled={deletingDayId === selectedTrainingDay.id}
+              aria-label={deletingDayId === selectedTrainingDay.id ? "Deleting day" : "Delete day"}
+              title={deletingDayId === selectedTrainingDay.id ? "Deleting..." : "Delete day"}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60"
             >
-              Back To Calendar
+              <FaTrashAlt />
+              <span className="sr-only">{deletingDayId === selectedTrainingDay.id ? "Deleting..." : "Delete day"}</span>
             </button>
-          </div>
-
-          <p className="text-xs font-medium text-slate-700 sm:text-sm">{selectedDateLabel(selectedDateIso)}</p>
-          {autosaveStatus && <p className={`text-xs font-medium ${autosaveStatus.className}`}>{autosaveStatus.message}</p>}
-
-          <div className="space-y-2 rounded-xl border border-sky-100 bg-white/80 p-2 sm:space-y-3 sm:p-3">
-          <input
-            value={dayName}
-            onChange={(event) => setDayName(event.target.value)}
-            placeholder="Training day name (e.g. Pull Day)"
-            className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none ring-sky-200 focus:ring-2 sm:px-3 sm:py-2 sm:text-sm"
-          />
-
-          <select
-            value={intensity}
-            onChange={(event) => setIntensity(event.target.value as TrainingIntensity)}
-            className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none ring-sky-200 focus:ring-2 sm:px-3 sm:py-2 sm:text-sm"
+          )}
+          <button
+            type="button"
+            onClick={closeEditor}
+            className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
           >
-            {INTENSITY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                Intensity: {option.label}
-              </option>
-            ))}
-          </select>
+            Back to calendar
+          </button>
+        </div>
+      </div>
 
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-            <select
-              value={selectedFavoriteDayId}
-              onChange={(event) => setSelectedFavoriteDayId(event.target.value)}
-              className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none ring-sky-200 focus:ring-2 sm:px-3 sm:py-2 sm:text-sm"
-            >
-              <option value="">Load lifts from favorite day...</option>
-              {favoriteDays.map((day) => (
-                <option key={day.id} value={day.id}>
-                  {day.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleApplyFavoriteDay}
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-slate-100 sm:px-3 sm:py-2 sm:text-sm"
-            >
-              Apply
-            </button>
+      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="space-y-4 rounded-[24px] border border-slate-200 bg-white/90 p-4">
+          {suggestionSummary && (
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+              <span className="font-semibold">Suggestion summary:</span> {suggestionSummary}
+            </div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="space-y-1 text-sm text-slate-700 md:col-span-2">
+              <span>Day name</span>
+              <input
+                value={dayName}
+                onChange={(event) => setDayName(event.target.value)}
+                placeholder="Pull Day, Lower 1, Recovery Accessories..."
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              />
+            </label>
+
+            <label className="space-y-1 text-sm text-slate-700">
+              <span>Status</span>
+              <select
+                value={dayStatus}
+                onChange={(event) => setDayStatus(event.target.value as TrainingDayStatus)}
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-1 text-sm text-slate-700">
+              <span>Intensity</span>
+              <select
+                value={intensity}
+                onChange={(event) => setIntensity(event.target.value as TrainingIntensity)}
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              >
+                {INTENSITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
-          <div className="space-y-2.5 sm:space-y-3">
-            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:text-xs">
-              <FaDumbbell />
-              Current Lifts
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Preset Day</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+              <select
+                value={selectedPresetId}
+                onChange={(event) => setSelectedPresetId(event.target.value)}
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              >
+                <option value="">Load a preset day...</option>
+                {presetDays.map((day) => (
+                  <option key={day.id} value={day.id}>
+                    {day.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleApplyPreset}
+                className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Apply preset
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <FaSearch />
+              Add lift
             </div>
 
-            {draftLifts.length === 0 && (
-              <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-500 sm:p-3">
-                No lifts yet. Apply a favorite day or add one manually below.
-              </p>
-            )}
+            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+              <input
+                value={newLiftName}
+                onChange={(event) => setNewLiftName(event.target.value)}
+                placeholder="Search saved lifts or type a custom lift"
+                list="saved-lift-name-options"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              />
+              <button
+                type="button"
+                onClick={handleAddLift}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700"
+              >
+                <FaPlus />
+                Add lift
+              </button>
+            </div>
 
+            <datalist id="saved-lift-name-options">
+              {savedLifts.map((lift) => (
+                <option key={lift.id} value={lift.name} />
+              ))}
+            </datalist>
+
+            {matchingSavedLifts.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {matchingSavedLifts.map((lift) => (
+                  <button
+                    key={lift.id}
+                    type="button"
+                    onClick={() => handleAddLiftFromSaved(lift)}
+                    className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
+                  >
+                    {lift.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-4 rounded-[24px] border border-slate-200 bg-white/90 p-4">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            <FaDumbbell />
+            Lifts in this day
+          </div>
+
+          {draftLifts.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              No lifts yet. Load a preset day or add lifts one by one.
+            </div>
+          )}
+
+          <div className="space-y-4">
             {draftLifts.map((lift) => (
-              <div key={lift.key} className="space-y-1.5 rounded-md border border-slate-200 bg-slate-50 p-2 sm:space-y-2 sm:p-3">
-                <div className="flex items-center justify-between gap-2">
+              <div key={lift.key} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <input
                     value={lift.name}
                     onChange={(event) => updateDraftLiftName(lift.key, event.target.value)}
                     placeholder="Lift name"
-                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs outline-none ring-sky-200 focus:ring-2 sm:px-2 sm:py-1.5 sm:text-sm"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
                   />
                   <button
                     type="button"
                     onClick={() => removeDraftLift(lift.key)}
-                    className="inline-flex items-center gap-1 rounded-md border border-rose-300 bg-white px-2 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                    aria-label={`Remove ${lift.name || "lift"}`}
+                    title="Remove lift"
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50"
                   >
                     <FaTrashAlt />
-                    <span className="sr-only sm:not-sr-only">Remove</span>
+                    <span className="sr-only">Remove lift</span>
                   </button>
                 </div>
 
-                <div className="space-y-1.5 sm:space-y-2">
+                <div className="mt-4 space-y-3">
                   {lift.rows.map((row, index) => (
-                    <div key={row.key} className="rounded-md border border-slate-200 bg-white p-1.5 sm:p-2">
-                      <div className="flex items-center gap-1">
+                    <div
+                      key={row.key}
+                      className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 md:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1fr)_auto_auto_auto]"
+                    >
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Sets</span>
                         <input
                           value={row.sets}
                           onChange={(event) => updateDraftLiftRow(lift.key, row.key, "sets", event.target.value)}
                           type="number"
                           min={1}
-                          placeholder={`S${index + 1}`}
-                          className="w-10 rounded-md border border-slate-300 bg-white px-1 py-1 text-[11px] outline-none ring-sky-200 focus:ring-2 sm:w-12 sm:px-1.5 sm:text-xs"
+                          placeholder={`Row ${index + 1}`}
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
                         />
+                      </label>
+
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Reps</span>
                         <input
                           value={row.reps}
                           onChange={(event) => updateDraftLiftRow(lift.key, row.key, "reps", event.target.value)}
                           type="number"
                           min={1}
-                          placeholder="R"
-                          className="w-10 rounded-md border border-slate-300 bg-white px-1 py-1 text-[11px] outline-none ring-sky-200 focus:ring-2 sm:w-12 sm:px-1.5 sm:text-xs"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
                         />
+                      </label>
+
+                      <label className="col-span-2 space-y-1 text-sm text-slate-700 md:col-span-1">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Weight ({weightUnit})
+                        </span>
                         <input
                           value={row.weight}
                           onChange={(event) => updateDraftLiftRow(lift.key, row.key, "weight", event.target.value)}
                           type="number"
                           min={0}
                           step="0.01"
-                          placeholder={`Wt (${weightUnit})`}
-                          className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] outline-none ring-sky-200 focus:ring-2 sm:px-2 sm:text-xs"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
                         />
+                      </label>
 
-                        <label className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-1.5 text-xs text-slate-700 hover:bg-slate-100">
-                          <input
-                            type="checkbox"
-                            checked={row.isPr}
-                            onChange={(event) => updateDraftLiftRowPr(lift.key, row.key, event.target.checked)}
-                            className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                          />
-                          <FaMedal className={row.isPr ? "text-amber-500" : "text-slate-400"} />
-                          <span className="sr-only">PR</span>
+                      {dayStatus === "completed" && (
+                        <label className="col-span-2 flex items-end md:col-span-1">
+                          <span className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={row.isPr}
+                              onChange={(event) => updateDraftLiftRowPr(lift.key, row.key, event.target.checked)}
+                              className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                            />
+                            <FaMedal className={row.isPr ? "text-amber-500" : "text-slate-400"} />
+                            PR
+                          </span>
                         </label>
+                      )}
 
+                      <div className="col-span-2 flex items-end md:col-span-1">
                         <button
                           type="button"
                           onClick={() =>
@@ -1001,23 +1347,28 @@ export function CalendarView() {
                             })
                           }
                           className={[
-                            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-xs",
+                            "inline-flex w-full items-center justify-center gap-2 rounded-full border px-4 py-3 text-sm font-medium",
                             row.notes.trim()
                               ? "border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100"
                               : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
                           ].join(" ")}
                         >
                           <FaStickyNote />
-                          <span className="sr-only">{row.notes.trim() ? "Edit Note" : "Add Note"}</span>
+                          Notes
                         </button>
+                      </div>
 
+                      <div className="col-span-2 flex items-end justify-end md:col-span-1 md:justify-start">
                         <button
                           type="button"
                           onClick={() => removeDraftLiftRow(lift.key, row.key)}
                           disabled={lift.rows.length <= 1}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-300 bg-white p-0 text-xs text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label={`Remove row ${index + 1}`}
+                          title={lift.rows.length <= 1 ? "At least one row is required" : "Remove row"}
+                          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           <FaTrashAlt />
+                          <span className="sr-only">Remove row</span>
                         </button>
                       </div>
                     </div>
@@ -1027,225 +1378,306 @@ export function CalendarView() {
                 <button
                   type="button"
                   onClick={() => addDraftLiftRow(lift.key)}
-                  className="inline-flex items-center gap-1 rounded-md border border-sky-300 bg-white px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 sm:px-2.5 sm:py-1.5"
+                  className="mt-4 inline-flex items-center gap-2 rounded-full border border-sky-300 bg-white px-4 py-2.5 text-sm font-medium text-sky-700 hover:bg-sky-50"
                 >
                   <FaPlus />
-                  Add Row
+                  Add row
                 </button>
               </div>
             ))}
           </div>
 
-          <div className="space-y-2 rounded-md border border-slate-200 bg-white p-2.5 sm:p-3">
-            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <FaSearch />
-              Add Lift Manually
-            </label>
-
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-              <input
-                value={newLiftName}
-                onChange={(event) => setNewLiftName(event.target.value)}
-                placeholder="Search saved lifts or type a new one"
-                list="saved-lift-name-options"
-                className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none ring-sky-200 focus:ring-2 sm:px-3 sm:py-2 sm:text-sm"
-              />
-              <button
-                type="button"
-                onClick={handleAddLift}
-                className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-700 sm:px-3 sm:py-2 sm:text-sm"
-              >
-                <FaPlus />
-                Add Lift
-              </button>
-            </div>
-
-            <datalist id="saved-lift-name-options">
-              {savedLiftNames.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-
-            {matchingSavedLiftNames.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {matchingSavedLiftNames.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => setNewLiftName(name)}
-                    className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100"
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           <button
             type="button"
             onClick={handleSaveTrainingDay}
-            disabled={editorState.kind === "saving" || (editorMode === "edit" && autosaveState.kind === "saving")}
-            className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500 sm:py-2.5"
+            disabled={editorState.kind === "saving"}
+            className="hidden w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500 sm:inline-flex"
           >
-            {editorState.kind === "saving"
-              ? "Saving..."
-              : editorMode === "edit"
-                ? "Update Training Day"
-                : "Save Training Day"}
+            <FaSave />
+            {editorSaveLabel}
           </button>
 
-            {editorState.kind === "success" && <p className="text-sm text-emerald-600">{editorState.message}</p>}
-            {editorState.kind === "error" && <p className="text-sm text-rose-600">{editorState.message}</p>}
+          {editorState.kind === "error" && <p className="text-sm text-rose-600">{editorState.message}</p>}
+          {editorState.kind === "success" && <p className="text-sm text-emerald-600">{editorState.message}</p>}
+        </div>
+      </div>
+
+      <div className="sticky bottom-2 z-30 -mx-1 mt-2 px-1 sm:hidden">
+        <div className="rounded-[26px] border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur supports-[padding:max(0px)]:pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+            <button
+              type="button"
+              onClick={closeEditor}
+              className="inline-flex h-12 items-center justify-center rounded-full border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-100"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveTrainingDay}
+              disabled={editorState.kind === "saving"}
+              className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500"
+            >
+              <FaSave />
+              {editorSaveLabel}
+            </button>
+            {selectedTrainingDay ? (
+              <button
+                type="button"
+                onClick={handleDeleteDay}
+                disabled={deletingDayId === selectedTrainingDay.id}
+                aria-label={deletingDayId === selectedTrainingDay.id ? "Deleting day" : "Delete day"}
+                title={deletingDayId === selectedTrainingDay.id ? "Deleting..." : "Delete day"}
+                className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-rose-300 bg-white text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+              >
+                <FaTrashAlt />
+                <span className="sr-only">{deletingDayId === selectedTrainingDay.id ? "Deleting..." : "Delete day"}</span>
+              </button>
+            ) : (
+              <div aria-hidden="true" className="h-12 w-12" />
+            )}
           </div>
-        </section>
-        {notesModalElement}
-      </>
-    );
-  }
+        </div>
+      </div>
+    </section>
+  ) : null;
 
   return (
     <>
-      <section className="space-y-2.5 rounded-2xl border border-sky-100 bg-gradient-to-br from-white via-sky-50 to-amber-50 p-2 shadow-sm sm:space-y-4 sm:p-6">
-      <div className="flex items-center justify-between">
-        <button
-          type="button"
-          onClick={() => setActiveMonth((current) => addMonths(current, -1))}
-          className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium hover:bg-slate-100 sm:gap-2 sm:px-3 sm:py-2 sm:text-sm"
-        >
-          <FaChevronLeft />
-          <span className="hidden sm:inline">Previous</span>
-        </button>
-        <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900 sm:text-xl">
-          <FaCalendarAlt className="text-sky-600" />
-          {monthTitle(activeMonth)}
-        </h2>
-        <button
-          type="button"
-          onClick={() => setActiveMonth((current) => addMonths(current, 1))}
-          className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium hover:bg-slate-100 sm:gap-2 sm:px-3 sm:py-2 sm:text-sm"
-        >
-          <span className="hidden sm:inline">Next</span>
-          <FaChevronRight />
-        </button>
-      </div>
-
-      {calendarState.kind === "saving" && <p className="text-xs text-slate-500">Loading training days...</p>}
-      {calendarState.kind === "error" && <p className="text-xs text-rose-600">{calendarState.message}</p>}
-      {calendarState.kind === "success" && <p className="text-xs text-emerald-600">{calendarState.message}</p>}
-      {referenceError && <p className="text-xs text-rose-600">{referenceError}</p>}
-
-      <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] font-medium text-slate-500 sm:gap-2 sm:text-sm">
-        {WEEKDAY_LABELS.map((label) => (
-          <div key={label} className="py-1 sm:py-2">
-            <span className="sm:hidden">{label[0]}</span>
-            <span className="hidden sm:inline">{label}</span>
+      <section className="space-y-4 rounded-[28px] border border-sky-100 bg-[linear-gradient(180deg,#ffffff_0%,#f5fbff_48%,#fff6ec_100%)] p-3 shadow-sm sm:p-6">
+        <div className="space-y-3">
+          <div className="text-center">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Calendar</p>
+            <h2 className="mt-1 flex items-center justify-center gap-2 text-lg font-semibold text-slate-900 sm:text-xl">
+              <FaCalendarAlt className="text-sky-600" />
+              {monthTitle(activeMonth)}
+            </h2>
           </div>
-        ))}
-      </div>
 
-      <div className="grid grid-cols-7 gap-0.5 sm:gap-2">
-        {cells.map((day, index) => {
-          if (day === null) {
-            return <div key={`blank-${index}`} className="h-12 rounded-md border border-transparent sm:h-20" />;
-          }
-
-          const dateIso = isoDateForDay(activeMonth, day);
-          const trainingDay = trainingDaysByDate[dateIso];
-          const isSelected = day === selectedDay;
-          const isToday = isTodayInActiveMonth(activeMonth, day, today);
-          const hasPr = Boolean(trainingDay && trainingDay.lifts.some((lift) => lift.isPr));
-
-          return (
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-between">
             <button
-              key={dateIso}
               type="button"
-              onClick={() => handleSelectDay(day)}
-              className={[
-                "h-12 rounded-md border p-0.5 text-left align-top transition sm:h-20 sm:p-1.5",
-                trainingDay ? INTENSITY_DAY_CELL_CLASS[trainingDay.intensity] : "border-slate-200 bg-white",
-                isSelected ? "border-sky-500 ring-2 ring-sky-200" : "",
-                isToday ? "shadow-[inset_0_0_0_1px_rgb(14_165_233_/_0.45)]" : "",
-              ].join(" ")}
+              onClick={() => setActiveMonth((current) => addMonths(current, -1))}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-100"
             >
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-slate-700 sm:text-xs">{day}</span>
-                <div className="flex items-center">
+              <FaChevronLeft />
+              <span>Previous</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveMonth((current) => addMonths(current, 1))}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-100"
+            >
+              <span>Next</span>
+              <FaChevronRight />
+            </button>
+          </div>
+        </div>
+
+        {calendarState.kind === "saving" && <p className="text-xs text-slate-500">Loading days...</p>}
+        {calendarState.kind === "error" && <p className="text-xs text-rose-600">{calendarState.message}</p>}
+        {calendarState.kind === "success" && <p className="text-xs text-emerald-600">{calendarState.message}</p>}
+        {referenceError && <p className="text-xs text-rose-600">{referenceError}</p>}
+
+        <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] font-medium text-slate-500 sm:gap-2 sm:text-sm">
+          {WEEKDAY_LABELS.map((label) => (
+            <div key={label} className="py-1 sm:py-2">
+              <span className="sm:hidden">{label[0]}</span>
+              <span className="hidden sm:inline">{label}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+          {cells.map((day, index) => {
+            if (day === null) {
+              return <div key={`blank-${index}`} className="h-16 rounded-xl border border-transparent sm:h-24" />;
+            }
+
+            const dateIso = isoDateForDay(activeMonth, day);
+            const trainingDay = trainingDaysByDate[dateIso];
+            const isSelected = day === selectedDay;
+            const isToday = isTodayInActiveMonth(activeMonth, day, today);
+            const hasPr = Boolean(
+              trainingDay && trainingDay.status === "completed" && trainingDay.lifts.some((lift) => lift.isPr)
+            );
+
+            return (
+              <button
+                key={dateIso}
+                type="button"
+                onClick={() => {
+                  setSelectedDay(day);
+                  setEditorOpen(false);
+                  setEditorState({ kind: "idle" });
+                  setNotesModal(null);
+                  setSuggestDayModal(null);
+                  setSuggestionSummary(null);
+                }}
+                className={[
+                  "h-16 rounded-xl border p-1.5 text-left align-top transition sm:h-24 sm:p-2",
+                  dayCardClass(trainingDay ?? null),
+                  isSelected ? "border-sky-500 ring-2 ring-sky-200" : "",
+                  isToday ? "shadow-[inset_0_0_0_1px_rgb(14_165_233_/_0.45)]" : "",
+                ].join(" ")}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 sm:text-xs">{day}</span>
                   {hasPr && (
-                    <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-200 text-[8px] text-amber-900 sm:h-4 sm:w-4 sm:text-[9px]" aria-label="PR">
+                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-200 text-[8px] text-amber-900">
                       <FaMedal />
                     </span>
                   )}
                 </div>
-              </div>
-              {trainingDay && (
-                <div
-                  className={[
-                    "mt-0.5 line-clamp-1 rounded px-1 py-0.5 text-[8px] leading-tight font-medium sm:mt-1 sm:line-clamp-2 sm:text-[10px]",
-                    INTENSITY_DAY_BADGE_CLASS[trainingDay.intensity],
-                  ].join(" ")}
-                >
-                  {trainingDay.name}
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </div>
 
-      <div className="space-y-2 rounded-xl border border-slate-200 bg-white/70 p-2 sm:space-y-3 sm:p-4">
-        <h3 className="text-xs font-semibold text-slate-800 sm:text-sm">{selectedDateLabel(selectedDateIso)}</h3>
-
-        {selectedTrainingDay ? (
-          <div className="space-y-2 sm:space-y-3">
-            <div className="flex items-center justify-between rounded-md border border-slate-200 bg-white p-2 sm:p-3">
-              <div>
-                <p className="text-xs font-semibold text-slate-800 sm:text-sm">{selectedTrainingDay.name}</p>
-                <p className="text-[11px] text-slate-500 sm:text-xs">History</p>
-              </div>
-              <div className="flex items-center gap-2">
-                {selectedTrainingDay.lifts.some((lift) => lift.isPr) && (
-                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-200 text-[10px] text-amber-900" aria-label="PR">
-                    <FaMedal />
-                  </span>
+                {trainingDay && (
+                  <div className="mt-1 space-y-1">
+                    <span
+                      className={[
+                        "hidden rounded-full px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide sm:inline-flex sm:text-[10px]",
+                        STATUS_BADGE_CLASS[trainingDay.status],
+                      ].join(" ")}
+                    >
+                      {trainingDay.status}
+                    </span>
+                    <span
+                      className={[
+                        "inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide sm:hidden",
+                        STATUS_BADGE_CLASS[trainingDay.status],
+                      ].join(" ")}
+                    >
+                      {STATUS_MOBILE_LABEL[trainingDay.status]}
+                    </span>
+                    <div
+                      className={[
+                        "truncate rounded-lg px-1.5 py-1 text-[9px] font-medium leading-tight sm:line-clamp-2 sm:px-2 sm:text-[10px]",
+                        dayBadgeClass(trainingDay),
+                      ].join(" ")}
+                    >
+                      {compactCalendarLabel(trainingDay.name)}
+                    </div>
+                  </div>
                 )}
-                <span
-                  className={[
-                    "inline-flex h-2.5 w-2.5 rounded-full",
-                    INTENSITY_DOT_CLASS[selectedTrainingDay.intensity],
-                  ].join(" ")}
-                />
-                <button
-                  type="button"
-                  onClick={handleEditTraining}
-                  className="inline-flex items-center gap-1 rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100 sm:px-2.5 sm:py-1.5 sm:text-xs"
-                >
-                  <FaPen />
-                  Edit
-                </button>
-              </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-[24px] border border-slate-200 bg-white/85 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">{selectedDateLabel(selectedDateIso)}</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                {selectedTrainingDay
+                  ? selectedTrainingDay.status === "planned"
+                    ? "This date is currently saved as a planned training day."
+                    : "This date has a recorded lift day."
+                  : "Nothing saved on this date yet."}
+              </p>
             </div>
 
-            <div className="space-y-1.5 sm:space-y-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <button
+                type="button"
+                onClick={openSuggestDayModal}
+                disabled={Boolean(suggestDayDisabledReason)}
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-violet-300 bg-violet-50 px-4 py-2.5 text-sm font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 sm:w-auto"
+              >
+                <FaSave />
+                Suggest day
+              </button>
+              {selectedTrainingDay ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openEditorForExistingDay(selectedTrainingDay)}
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 hover:bg-sky-100 sm:w-auto"
+                  >
+                    <FaPen />
+                    Edit day
+                  </button>
+                  {selectedTrainingDay.status === "planned" && (
+                    <button
+                      type="button"
+                      onClick={() => openEditorForExistingDay(selectedTrainingDay, "completed")}
+                      className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 sm:w-auto"
+                    >
+                      <FaSave />
+                      Mark completed
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openEditorForNewDay("planned")}
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 hover:bg-sky-100 sm:w-auto"
+                  >
+                    <FaCalendarAlt />
+                    Plan day
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openEditorForNewDay("completed")}
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 sm:w-auto"
+                  >
+                    <FaDumbbell />
+                    Log day
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {selectedTrainingDay ? (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={[
+                    "inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide",
+                    STATUS_BADGE_CLASS[selectedTrainingDay.status],
+                  ].join(" ")}
+                >
+                  {selectedTrainingDay.status}
+                </span>
+                <span
+                  className={[
+                    "inline-flex rounded-full px-3 py-1 text-xs font-medium",
+                    INTENSITY_DAY_BADGE_CLASS[selectedTrainingDay.intensity],
+                  ].join(" ")}
+                >
+                  {selectedTrainingDay.intensity}
+                </span>
+              </div>
+
               {selectedTrainingLiftGroups.length === 0 && (
-                <p className="rounded-md border border-slate-200 bg-white p-2.5 text-xs text-slate-500 sm:p-3">No lifts logged.</p>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                  No lifts stored on this day.
+                </div>
               )}
 
               {selectedTrainingLiftGroups.map((lift) => (
-                <div key={lift.name} className="rounded-md border border-slate-200 bg-white p-2.5 sm:p-3">
-                  <p className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                <div key={`${lift.savedLiftId ?? "custom"}-${lift.name}`} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="flex items-center gap-2 text-base font-semibold text-slate-900">
                     <FaDumbbell className="text-slate-500" />
                     {lift.name}
                   </p>
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-3 space-y-2">
                     {lift.rows.map((row, index) => (
-                      <div key={`${lift.name}-${index}`} className="flex items-center justify-between gap-2">
-                        <p className="text-xs text-slate-600">
-                          Set Row {index + 1}: {formatLiftHistoryRow(row, weightUnit)}
-                        </p>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          {row.isPr && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-900">
+                      <div key={`${lift.name}-${index}`} className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-sm text-slate-700">
+                            Row {index + 1}: {formatLiftHistoryRow(row, weightUnit)}
+                          </p>
+                          {selectedTrainingDay.status === "planned" && (
+                            <p className="text-xs text-slate-500">Saved as a plan for this date.</p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
+                          {row.isPr && selectedTrainingDay.status === "completed" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-1 text-[10px] font-semibold uppercase text-amber-900">
                               <FaMedal />
                               PR
                             </span>
@@ -1260,7 +1692,7 @@ export function CalendarView() {
                                   notes: row.notes,
                                 })
                               }
-                              className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100"
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
                             >
                               <FaStickyNote />
                               Notes
@@ -1273,22 +1705,20 @@ export function CalendarView() {
                 </div>
               ))}
             </div>
-          </div>
-        ) : (
-          <div className="space-y-2 rounded-md border border-dashed border-slate-300 bg-white p-2.5 text-center sm:space-y-3 sm:p-4">
-            <p className="text-xs text-slate-600 sm:text-sm">No training day logged for this date.</p>
-            <button
-              type="button"
-              onClick={handleStartTraining}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 sm:py-2.5 sm:text-sm"
-            >
-              <FaPlus />
-              Start Training
-            </button>
-          </div>
+          ) : (
+            <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              Save a planned day here if you want next week mapped out ahead of time, or log a completed day when you finish training.
+            </div>
+          )}
+        </div>
+
+        {suggestDayDisabledReason && (
+          <p className="mt-3 text-sm text-slate-500">{suggestDayDisabledReason}</p>
         )}
-      </div>
       </section>
+
+      {editorElement}
+      {suggestDayModalElement}
       {notesModalElement}
     </>
   );

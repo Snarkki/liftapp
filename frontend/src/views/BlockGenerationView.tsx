@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { FaBolt, FaCalendarAlt, FaClone, FaPlus, FaSave, FaTrashAlt } from "react-icons/fa";
 
 import {
   createCategory,
   createSavedLift,
+  deleteCategory,
   deleteLiftTemplateDay,
   deleteSavedLift,
   fetchCategories,
@@ -18,18 +20,27 @@ import {
 } from "../api/lifts";
 import { SaveState } from "../types";
 
-type DraftTemplateDay = {
-  key: string;
-  name: string;
-  liftIds: number[];
-};
-
 type UserProfileDraft = {
   weightUnit: UserProfile["weightUnit"];
   heightUnit: UserProfile["heightUnit"];
   height: string;
   weight: string;
   gender: UserProfile["gender"];
+};
+
+type PresetLiftDraft = {
+  key: string;
+  savedLiftId: string;
+  sets: string;
+  reps: string;
+  weight: string;
+};
+
+type PresetDayDraft = {
+  key: string;
+  id: number | null;
+  name: string;
+  lifts: PresetLiftDraft[];
 };
 
 const DEFAULT_PROFILE_DRAFT: UserProfileDraft = {
@@ -40,12 +51,8 @@ const DEFAULT_PROFILE_DRAFT: UserProfileDraft = {
   gender: "unspecified",
 };
 
-function nextDayKey(): string {
+function nextKey(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function createDraftDay(name = ""): DraftTemplateDay {
-  return { key: nextDayKey(), name, liftIds: [] };
 }
 
 function draftFromUserProfile(profile: UserProfile): UserProfileDraft {
@@ -56,6 +63,41 @@ function draftFromUserProfile(profile: UserProfile): UserProfileDraft {
     weight: profile.weight !== null ? String(profile.weight) : "",
     gender: profile.gender,
   };
+}
+
+function liftDefaultsLabel(lift: SavedLift): string {
+  const parts: string[] = [];
+
+  if (lift.defaultSets !== null && lift.defaultReps !== null) {
+    parts.push(`${lift.defaultSets} x ${lift.defaultReps}`);
+  } else {
+    if (lift.defaultSets !== null) {
+      parts.push(`${lift.defaultSets} sets`);
+    }
+    if (lift.defaultReps !== null) {
+      parts.push(`${lift.defaultReps} reps`);
+    }
+  }
+
+  if (lift.defaultWeight !== null) {
+    parts.push(`${lift.defaultWeight}`);
+  }
+
+  return parts.length > 0 ? parts.join(" • ") : "No default set data";
+}
+
+function parseOptionalPositiveInt(value: string, fieldName: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${fieldName} must be a positive integer.`);
+  }
+
+  return parsed;
 }
 
 function parseOptionalNonNegativeNumber(value: string, fieldName: string): number | null {
@@ -72,47 +114,127 @@ function parseOptionalNonNegativeNumber(value: string, fieldName: string): numbe
   return parsed;
 }
 
-export function SettingsView() {
-  const [categories, setCategories] = useState<LiftCategory[]>([]);
-  const [lifts, setLifts] = useState<SavedLift[]>([]);
-  const [templateDays, setTemplateDays] = useState<LiftTemplateDay[]>([]);
-  const [draftDays, setDraftDays] = useState<DraftTemplateDay[]>([createDraftDay("Pull Day")]);
+function optionalNumberString(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
+}
 
+function createPresetLiftDraft(savedLift?: SavedLift, overrides?: { sets?: number | null; reps?: number | null; weight?: number | null }): PresetLiftDraft {
+  return {
+    key: nextKey(),
+    savedLiftId: savedLift ? String(savedLift.id) : "",
+    sets: optionalNumberString(overrides?.sets ?? savedLift?.defaultSets ?? null),
+    reps: optionalNumberString(overrides?.reps ?? savedLift?.defaultReps ?? null),
+    weight: optionalNumberString(overrides?.weight ?? savedLift?.defaultWeight ?? null),
+  };
+}
+
+function draftFromTemplateDay(day: LiftTemplateDay, savedLifts: SavedLift[]): PresetDayDraft {
+  return {
+    key: nextKey(),
+    id: day.id,
+    name: day.name,
+    lifts: day.lifts.map((lift) => {
+      const matchingSavedLift = savedLifts.find((savedLift) => savedLift.id === lift.savedLiftId);
+      return createPresetLiftDraft(matchingSavedLift, {
+        sets: lift.sets,
+        reps: lift.reps,
+        weight: lift.weight,
+      });
+    }),
+  };
+}
+
+function createPresetDayDraft(savedLifts: SavedLift[]): PresetDayDraft {
+  return {
+    key: nextKey(),
+    id: null,
+    name: "",
+    lifts: savedLifts.length > 0 ? [createPresetLiftDraft(savedLifts[0])] : [],
+  };
+}
+
+function statusMessage(state: SaveState): { text: string; className: string } | null {
+  if (state.kind === "success") {
+    return { text: state.message, className: "text-emerald-600" };
+  }
+
+  if (state.kind === "error") {
+    return { text: state.message, className: "text-rose-600" };
+  }
+
+  if (state.kind === "saving") {
+    return { text: "Saving...", className: "text-sky-700" };
+  }
+
+  return null;
+}
+
+function selectOptionsForLiftFilter(
+  filteredLifts: SavedLift[],
+  allLifts: SavedLift[],
+  selectedLiftId: string
+): SavedLift[] {
+  if (!selectedLiftId) {
+    return filteredLifts;
+  }
+
+  const selectedLift = allLifts.find((lift) => lift.id === Number(selectedLiftId));
+  if (!selectedLift || filteredLifts.some((lift) => lift.id === selectedLift.id)) {
+    return filteredLifts;
+  }
+
+  return [selectedLift, ...filteredLifts];
+}
+
+export function SettingsView() {
+  const [tags, setTags] = useState<LiftCategory[]>([]);
+  const [savedLifts, setSavedLifts] = useState<SavedLift[]>([]);
+  const [presetDays, setPresetDays] = useState<PresetDayDraft[]>([]);
+  const [activePresetDayKey, setActivePresetDayKey] = useState("");
   const [profileDraft, setProfileDraft] = useState<UserProfileDraft>(DEFAULT_PROFILE_DRAFT);
 
-  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newTagName, setNewTagName] = useState("");
+  const [selectedTagId, setSelectedTagId] = useState("");
+  const [savedLiftTagFilter, setSavedLiftTagFilter] = useState("");
+  const [presetLiftTagFilter, setPresetLiftTagFilter] = useState("");
   const [newLiftName, setNewLiftName] = useState("");
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
-  const [selectedVariationOfId, setSelectedVariationOfId] = useState<string>("");
+  const [newLiftSets, setNewLiftSets] = useState("");
+  const [newLiftReps, setNewLiftReps] = useState("");
+  const [newLiftWeight, setNewLiftWeight] = useState("");
 
   const [loadMessage, setLoadMessage] = useState("Loading settings...");
-  const [profileState, setProfileState] = useState<SaveState>({ kind: "idle" });
-  const [categoryState, setCategoryState] = useState<SaveState>({ kind: "idle" });
+  const [tagState, setTagState] = useState<SaveState>({ kind: "idle" });
   const [liftState, setLiftState] = useState<SaveState>({ kind: "idle" });
-  const [templateState, setTemplateState] = useState<SaveState>({ kind: "idle" });
+  const [presetState, setPresetState] = useState<SaveState>({ kind: "idle" });
+  const [profileState, setProfileState] = useState<SaveState>({ kind: "idle" });
+  const [deletingTagId, setDeletingTagId] = useState<number | null>(null);
   const [deletingLiftId, setDeletingLiftId] = useState<number | null>(null);
-  const [deletingTemplateDayId, setDeletingTemplateDayId] = useState<number | null>(null);
+  const [deletingPresetDayKey, setDeletingPresetDayKey] = useState<string | null>(null);
+  const [savingPresetDayKey, setSavingPresetDayKey] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
 
     const loadData = async () => {
       try {
-        const [profile, categoryList, liftList, days] = await Promise.all([
+        const [profile, categoryList, lifts, templates] = await Promise.all([
           fetchUserProfile(),
           fetchCategories(),
           fetchSavedLifts(),
           fetchLiftTemplate(),
         ]);
+
         if (!isMounted) {
           return;
         }
 
+        const loadedPresetDays = templates.map((day) => draftFromTemplateDay(day, lifts));
         setProfileDraft(draftFromUserProfile(profile));
-        setCategories(categoryList);
-        setLifts(liftList);
-        setTemplateDays(days);
-        setLoadMessage("Settings loaded.");
+        setTags(categoryList);
+        setSavedLifts(lifts);
+        setPresetDays(loadedPresetDays);
+        setActivePresetDayKey(loadedPresetDays[0]?.key ?? "");
+        setLoadMessage("Tags, lift library, and presets are ready.");
       } catch (error) {
         if (!isMounted) {
           return;
@@ -129,58 +251,117 @@ export function SettingsView() {
     };
   }, []);
 
-  const baseLifts = lifts.filter((lift) => lift.variationOf === null);
+  const sortedSavedLifts = useMemo(
+    () => [...savedLifts].sort((left, right) => left.name.localeCompare(right.name)),
+    [savedLifts]
+  );
+  const sortedTags = useMemo(() => [...tags].sort((left, right) => left.name.localeCompare(right.name)), [tags]);
+  const visibleSavedLifts = useMemo(() => {
+    if (!savedLiftTagFilter) {
+      return sortedSavedLifts;
+    }
 
-  const handleSaveProfile = async () => {
+    const filterId = Number(savedLiftTagFilter);
+    return sortedSavedLifts.filter((lift) => lift.category?.id === filterId);
+  }, [savedLiftTagFilter, sortedSavedLifts]);
+  const activePresetDay = useMemo(
+    () => presetDays.find((day) => day.key === activePresetDayKey) ?? null,
+    [activePresetDayKey, presetDays]
+  );
+
+  const presetLiftOptions = useMemo(() => {
+    if (!presetLiftTagFilter) {
+      return sortedSavedLifts;
+    }
+
+    const filterId = Number(presetLiftTagFilter);
+    return sortedSavedLifts.filter((lift) => lift.category?.id === filterId);
+  }, [presetLiftTagFilter, sortedSavedLifts]);
+
+  const profileStatus = statusMessage(profileState);
+  const tagStatus = statusMessage(tagState);
+  const liftStatus = statusMessage(liftState);
+  const presetStatus = statusMessage(presetState);
+
+  useEffect(() => {
+    if (presetDays.length === 0) {
+      if (activePresetDayKey) {
+        setActivePresetDayKey("");
+      }
+      return;
+    }
+
+    if (!presetDays.some((day) => day.key === activePresetDayKey)) {
+      setActivePresetDayKey(presetDays[0].key);
+    }
+  }, [activePresetDayKey, presetDays]);
+
+  const updatePresetDay = (dayKey: string, updater: (day: PresetDayDraft) => PresetDayDraft) => {
+    setPresetDays((current) => current.map((day) => (day.key === dayKey ? updater(day) : day)));
+  };
+
+  const handleCreateTag = async () => {
     try {
-      setProfileState({ kind: "saving" });
-
-      const saved = await saveUserProfile({
-        weightUnit: profileDraft.weightUnit,
-        heightUnit: profileDraft.heightUnit,
-        height: parseOptionalNonNegativeNumber(profileDraft.height, "Height"),
-        weight: parseOptionalNonNegativeNumber(profileDraft.weight, "Weight"),
-        gender: profileDraft.gender,
-      });
-
-      setProfileDraft(draftFromUserProfile(saved));
-      setProfileState({ kind: "success", message: "User details saved." });
+      setTagState({ kind: "saving" });
+      const created = await createCategory(newTagName);
+      setTags((current) => [...current, created].sort((left, right) => left.name.localeCompare(right.name)));
+      setSelectedTagId(String(created.id));
+      setNewTagName("");
+      setTagState({ kind: "success", message: "Tag added." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to save user details.";
-      setProfileState({ kind: "error", message });
+      const message = error instanceof Error ? error.message : "Failed to save tag.";
+      setTagState({ kind: "error", message });
     }
   };
 
-  const handleCreateCategory = async () => {
+  const handleDeleteTag = async (tagId: number) => {
     try {
-      setCategoryState({ kind: "saving" });
-      const created = await createCategory(newCategoryName);
-      setCategories((current) => {
-        if (current.some((category) => category.id === created.id)) {
-          return current;
-        }
-        return [...current, created].sort((a, b) => a.name.localeCompare(b.name));
-      });
-      setNewCategoryName("");
-      setCategoryState({ kind: "success", message: "Category saved." });
+      setDeletingTagId(tagId);
+      await deleteCategory(tagId);
+      setTags((current) => current.filter((tag) => tag.id !== tagId));
+      setSavedLifts((current) =>
+        current.map((lift) => (lift.category?.id === tagId ? { ...lift, category: null } : lift))
+      );
+
+      if (selectedTagId === String(tagId)) {
+        setSelectedTagId("");
+      }
+      if (savedLiftTagFilter === String(tagId)) {
+        setSavedLiftTagFilter("");
+      }
+      if (presetLiftTagFilter === String(tagId)) {
+        setPresetLiftTagFilter("");
+      }
+
+      setTagState({ kind: "success", message: "Tag deleted." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create category.";
-      setCategoryState({ kind: "error", message });
+      const message = error instanceof Error ? error.message : "Failed to delete tag.";
+      setTagState({ kind: "error", message });
+    } finally {
+      setDeletingTagId(null);
     }
   };
 
   const handleCreateLift = async () => {
     try {
       setLiftState({ kind: "saving" });
-      const categoryId = selectedCategoryId ? Number(selectedCategoryId) : null;
-      const variationOfId = selectedVariationOfId ? Number(selectedVariationOfId) : null;
-      const created = await createSavedLift(newLiftName, categoryId, variationOfId);
-      setLifts((current) => [...current, created].sort((a, b) => a.name.localeCompare(b.name)));
+      const created = await createSavedLift({
+        name: newLiftName,
+        categoryId: selectedTagId ? Number(selectedTagId) : null,
+        defaultSets: parseOptionalPositiveInt(newLiftSets, "Default sets"),
+        defaultReps: parseOptionalPositiveInt(newLiftReps, "Default reps"),
+        defaultWeight: parseOptionalNonNegativeNumber(newLiftWeight, "Default weight"),
+      });
+
+      setSavedLifts((current) => [...current, created]);
       setNewLiftName("");
-      setSelectedVariationOfId("");
-      setLiftState({ kind: "success", message: "Lift saved." });
+      setSelectedTagId("");
+      setNewLiftSets("");
+      setNewLiftReps("");
+      setNewLiftWeight("");
+      setLiftState({ kind: "success", message: "Lift added to your library." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create lift.";
+      const message = error instanceof Error ? error.message : "Failed to save lift.";
       setLiftState({ kind: "error", message });
     }
   };
@@ -189,17 +370,14 @@ export function SettingsView() {
     try {
       setDeletingLiftId(liftId);
       await deleteSavedLift(liftId);
-      setLifts((current) => current.filter((lift) => lift.id !== liftId));
-      setDraftDays((current) =>
+      setSavedLifts((current) => current.filter((lift) => lift.id !== liftId));
+      setPresetDays((current) =>
         current.map((day) => ({
           ...day,
-          liftIds: day.liftIds.filter((id) => id !== liftId),
+          lifts: day.lifts.filter((lift) => Number(lift.savedLiftId) !== liftId),
         }))
       );
-      if (selectedVariationOfId && Number(selectedVariationOfId) === liftId) {
-        setSelectedVariationOfId("");
-      }
-      setLiftState({ kind: "success", message: "Lift deleted." });
+      setLiftState({ kind: "success", message: "Lift removed from your library." });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to delete lift.";
       setLiftState({ kind: "error", message });
@@ -208,386 +386,759 @@ export function SettingsView() {
     }
   };
 
-  const handleDeleteTemplateDay = async (dayId: number) => {
+  const handleSaveProfile = async () => {
     try {
-      setDeletingTemplateDayId(dayId);
-      await deleteLiftTemplateDay(dayId);
-      setTemplateDays((current) => current.filter((day) => day.id !== dayId));
-      setTemplateState({ kind: "success", message: "Favorite day deleted." });
+      setProfileState({ kind: "saving" });
+      const savedProfile = await saveUserProfile({
+        weightUnit: profileDraft.weightUnit,
+        heightUnit: profileDraft.heightUnit,
+        height: parseOptionalNonNegativeNumber(profileDraft.height, "Height"),
+        weight: parseOptionalNonNegativeNumber(profileDraft.weight, "Weight"),
+        gender: profileDraft.gender,
+      });
+
+      setProfileDraft(draftFromUserProfile(savedProfile));
+      setProfileState({ kind: "success", message: "Preferences saved." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to delete favorite day.";
-      setTemplateState({ kind: "error", message });
-    } finally {
-      setDeletingTemplateDayId(null);
+      const message = error instanceof Error ? error.message : "Failed to save preferences.";
+      setProfileState({ kind: "error", message });
     }
   };
 
-  const updateDraftDayName = (key: string, name: string) => {
-    setDraftDays((current) =>
-      current.map((day) =>
-        day.key === key
-          ? {
-              ...day,
-              name,
-            }
-          : day
-      )
-    );
+  const handleAddPresetDay = () => {
+    const nextDay = createPresetDayDraft(sortedSavedLifts);
+    setPresetDays((current) => [...current, nextDay]);
+    setActivePresetDayKey(nextDay.key);
   };
 
-  const toggleLiftForDay = (key: string, liftId: number) => {
-    setDraftDays((current) =>
-      current.map((day) => {
-        if (day.key !== key) {
-          return day;
-        }
-        const exists = day.liftIds.includes(liftId);
-        return {
-          ...day,
-          liftIds: exists ? day.liftIds.filter((id) => id !== liftId) : [...day.liftIds, liftId],
-        };
-      })
-    );
-  };
-
-  const handleAddDraftDay = () => {
-    setDraftDays((current) => [...current, createDraftDay()]);
-  };
-
-  const handleRemoveDraftDay = (key: string) => {
-    setDraftDays((current) => current.filter((day) => day.key !== key));
-  };
-
-  const handleSaveTemplate = async () => {
-    if (draftDays.length === 0) {
-      setTemplateState({ kind: "error", message: "Add at least one favorite day." });
+  const handleDuplicatePresetDay = (dayKey: string) => {
+    const existing = presetDays.find((day) => day.key === dayKey);
+    if (!existing) {
       return;
     }
 
-    const usedNames = new Set<string>();
+    const duplicatedDay = {
+      ...existing,
+      key: nextKey(),
+      id: null,
+      name: existing.name ? `${existing.name} Copy` : "",
+      lifts: existing.lifts.map((lift) => ({ ...lift, key: nextKey() })),
+    };
 
-    for (const day of draftDays) {
-      const trimmedName = day.name.trim();
-      if (!trimmedName) {
-        setTemplateState({ kind: "error", message: "Each day requires a name." });
-        return;
-      }
+    setPresetDays((current) => [...current, duplicatedDay]);
+    setActivePresetDayKey(duplicatedDay.key);
+  };
 
-      const normalizedName = trimmedName.toLowerCase();
-      if (usedNames.has(normalizedName)) {
-        setTemplateState({ kind: "error", message: `Duplicate day name: ${trimmedName}.` });
-        return;
-      }
-      usedNames.add(normalizedName);
+  const handleRemovePresetDay = async (dayKey: string) => {
+    const presetDay = presetDays.find((day) => day.key === dayKey);
+    if (!presetDay) {
+      return;
+    }
 
-      if (day.liftIds.length === 0) {
-        setTemplateState({ kind: "error", message: `${trimmedName} must include at least one lift.` });
-        return;
-      }
+    if (presetDay.id === null) {
+      setPresetDays((current) => current.filter((day) => day.key !== dayKey));
+      return;
     }
 
     try {
-      setTemplateState({ kind: "saving" });
-      const savedDays = await saveLiftTemplate(
-        draftDays.map((day) => ({
-          name: day.name.trim(),
-          liftIds: day.liftIds,
-        }))
-      );
-      setTemplateDays(savedDays);
-      setTemplateState({ kind: "success", message: "Favorite days saved." });
+      setDeletingPresetDayKey(dayKey);
+      await deleteLiftTemplateDay(presetDay.id);
+      setPresetDays((current) => current.filter((day) => day.key !== dayKey));
+      setPresetState({ kind: "success", message: "Preset day deleted." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to save favorite days.";
-      setTemplateState({ kind: "error", message });
+      const message = error instanceof Error ? error.message : "Failed to delete preset day.";
+      setPresetState({ kind: "error", message });
+    } finally {
+      setDeletingPresetDayKey(null);
+    }
+  };
+
+  const handleAddLiftToPreset = (dayKey: string) => {
+    if (sortedSavedLifts.length === 0) {
+      setPresetState({ kind: "error", message: "Create at least one saved lift first." });
+      return;
+    }
+
+    updatePresetDay(dayKey, (day) => ({
+      ...day,
+      lifts: [...day.lifts, createPresetLiftDraft(sortedSavedLifts[0])],
+    }));
+  };
+
+  const handlePresetLiftSelection = (dayKey: string, liftKey: string, savedLiftId: string) => {
+    updatePresetDay(dayKey, (day) => ({
+      ...day,
+      lifts: day.lifts.map((lift) => {
+        if (lift.key !== liftKey) {
+          return lift;
+        }
+
+        const savedLift = sortedSavedLifts.find((candidate) => candidate.id === Number(savedLiftId));
+        return {
+          ...lift,
+          savedLiftId,
+          sets: savedLift?.defaultSets !== null && savedLift?.defaultSets !== undefined ? String(savedLift.defaultSets) : "",
+          reps: savedLift?.defaultReps !== null && savedLift?.defaultReps !== undefined ? String(savedLift.defaultReps) : "",
+          weight:
+            savedLift?.defaultWeight !== null && savedLift?.defaultWeight !== undefined
+              ? String(savedLift.defaultWeight)
+              : "",
+        };
+      }),
+    }));
+  };
+
+  const handleSavePresetDay = async (dayKey: string) => {
+    const presetDay = presetDays.find((day) => day.key === dayKey);
+    if (!presetDay) {
+      return;
+    }
+
+    const trimmedName = presetDay.name.trim();
+    if (!trimmedName) {
+      setPresetState({ kind: "error", message: "Preset day name is required." });
+      return;
+    }
+
+    if (presetDay.lifts.length === 0) {
+      setPresetState({ kind: "error", message: `${trimmedName} needs at least one lift.` });
+      return;
+    }
+
+    try {
+      const lifts = presetDay.lifts.map((lift, index) => {
+        const savedLiftId = Number(lift.savedLiftId);
+        if (!savedLiftId) {
+          throw new Error(`${trimmedName}: lift ${index + 1} needs a saved lift.`);
+        }
+
+        return {
+          savedLiftId,
+          sets: parseOptionalPositiveInt(lift.sets, `${trimmedName} lift ${index + 1} sets`),
+          reps: parseOptionalPositiveInt(lift.reps, `${trimmedName} lift ${index + 1} reps`),
+          weight: parseOptionalNonNegativeNumber(lift.weight, `${trimmedName} lift ${index + 1} weight`),
+        };
+      });
+
+      setSavingPresetDayKey(dayKey);
+      setPresetState({ kind: "saving" });
+      const savedTemplateDays = await saveLiftTemplate([
+        {
+          id: presetDay.id ?? undefined,
+          name: trimmedName,
+          lifts,
+        },
+      ]);
+
+      const savedTemplateDay =
+        savedTemplateDays.find((day) => day.id === presetDay.id) ??
+        savedTemplateDays.find((day) => day.name.trim().toLowerCase() === trimmedName.toLowerCase());
+
+      if (!savedTemplateDay) {
+        throw new Error("Saved preset day could not be found in the response.");
+      }
+
+      const nextDraft = draftFromTemplateDay(savedTemplateDay, sortedSavedLifts);
+      setPresetDays((current) => current.map((day) => (day.key === dayKey ? nextDraft : day)));
+      setActivePresetDayKey(nextDraft.key);
+      setPresetState({ kind: "success", message: `${trimmedName} saved.` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to save preset day.";
+      setPresetState({ kind: "error", message });
+    } finally {
+      setSavingPresetDayKey(null);
     }
   };
 
   return (
-    <section className="space-y-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div>
-        <h2 className="text-xl font-semibold">Settings</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Manage user details, units of measure, saved lifts, and favorite training day templates.
+    <section className="space-y-6 rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#fffdf8_0%,#f8fbff_58%,#eef6ff_100%)] p-4 shadow-sm sm:p-6">
+      <div className="space-y-2">
+        <p className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-white">
+          <FaBolt />
+          Settings
         </p>
-        <p className="mt-2 text-xs text-slate-500">{loadMessage}</p>
-      </div>
-
-      <div className="space-y-3 rounded-md border border-slate-200 p-4">
-        <h3 className="text-sm font-semibold text-slate-800">1. User Details</h3>
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="space-y-1 text-sm text-slate-700">
-            <span>Weight Unit</span>
-            <select
-              value={profileDraft.weightUnit}
-              onChange={(event) =>
-                setProfileDraft((current) => ({
-                  ...current,
-                  weightUnit: event.target.value as UserProfile["weightUnit"],
-                }))
-              }
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-            >
-              <option value="kg">kg</option>
-              <option value="lb">lb</option>
-            </select>
-          </label>
-
-          <label className="space-y-1 text-sm text-slate-700">
-            <span>Height Unit</span>
-            <select
-              value={profileDraft.heightUnit}
-              onChange={(event) =>
-                setProfileDraft((current) => ({
-                  ...current,
-                  heightUnit: event.target.value as UserProfile["heightUnit"],
-                }))
-              }
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-            >
-              <option value="cm">cm</option>
-              <option value="inch">inch</option>
-            </select>
-          </label>
-
-          <label className="space-y-1 text-sm text-slate-700">
-            <span>Height ({profileDraft.heightUnit})</span>
-            <input
-              value={profileDraft.height}
-              onChange={(event) => setProfileDraft((current) => ({ ...current, height: event.target.value }))}
-              placeholder={`e.g. ${profileDraft.heightUnit === "cm" ? "180" : "71"}`}
-              type="number"
-              min={0}
-              step="0.01"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-            />
-          </label>
-
-          <label className="space-y-1 text-sm text-slate-700">
-            <span>Weight ({profileDraft.weightUnit})</span>
-            <input
-              value={profileDraft.weight}
-              onChange={(event) => setProfileDraft((current) => ({ ...current, weight: event.target.value }))}
-              placeholder={`e.g. ${profileDraft.weightUnit === "kg" ? "82" : "180"}`}
-              type="number"
-              min={0}
-              step="0.01"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-            />
-          </label>
-
-          <label className="space-y-1 text-sm text-slate-700 md:col-span-2">
-            <span>Gender</span>
-            <select
-              value={profileDraft.gender}
-              onChange={(event) =>
-                setProfileDraft((current) => ({
-                  ...current,
-                  gender: event.target.value as UserProfile["gender"],
-                }))
-              }
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-            >
-              <option value="unspecified">Prefer not to say</option>
-              <option value="male">Male</option>
-              <option value="female">Female</option>
-              <option value="non-binary">Non-binary</option>
-              <option value="other">Other</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSaveProfile}
-            disabled={profileState.kind === "saving"}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:bg-slate-500"
-          >
-            {profileState.kind === "saving" ? "Saving..." : "Save User Details"}
-          </button>
-          {profileState.kind === "success" && <span className="text-sm text-emerald-600">{profileState.message}</span>}
-          {profileState.kind === "error" && <span className="text-sm text-rose-600">{profileState.message}</span>}
-        </div>
-
-        <p className="text-xs text-slate-500">Lift weights in calendar view will use your selected weight unit.</p>
-      </div>
-
-      <div className="space-y-3 rounded-md border border-slate-200 p-4">
-        <h3 className="text-sm font-semibold text-slate-800">2. Lift Categories</h3>
-        <div className="flex flex-wrap gap-2">
-          <input
-            value={newCategoryName}
-            onChange={(event) => setNewCategoryName(event.target.value)}
-            placeholder="e.g. Compound, Pull, Legs"
-            className="min-w-72 flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-          />
-          <button
-            type="button"
-            onClick={handleCreateCategory}
-            disabled={categoryState.kind === "saving"}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:bg-slate-500"
-          >
-            {categoryState.kind === "saving" ? "Saving..." : "Add Category"}
-          </button>
-        </div>
-        {categoryState.kind === "success" && <p className="text-sm text-emerald-600">{categoryState.message}</p>}
-        {categoryState.kind === "error" && <p className="text-sm text-rose-600">{categoryState.message}</p>}
-        <div className="flex flex-wrap gap-2">
-          {categories.map((category) => (
-            <span key={category.id} className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-700">
-              {category.name}
-            </span>
-          ))}
-          {categories.length === 0 && <span className="text-xs text-slate-500">No categories yet.</span>}
+        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-2xl font-semibold text-slate-900">Lift library and preset day builder</h2>
+            <p className="max-w-3xl text-sm text-slate-600">
+              Organize lifts with tags, optionally store set targets for the ones that matter, and build reusable preset days without giant scrolling lists.
+            </p>
+          </div>
+          <p className="text-xs text-slate-500">{loadMessage}</p>
         </div>
       </div>
 
-      <div className="space-y-3 rounded-md border border-slate-200 p-4">
-        <h3 className="text-sm font-semibold text-slate-800">3. Saved Lifts</h3>
-        <div className="grid gap-2 md:grid-cols-4">
-          <input
-            value={newLiftName}
-            onChange={(event) => setNewLiftName(event.target.value)}
-            placeholder="e.g. Deadlift"
-            className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-          />
-          <select
-            value={selectedCategoryId}
-            onChange={(event) => setSelectedCategoryId(event.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-          >
-            <option value="">No category</option>
-            {categories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={selectedVariationOfId}
-            onChange={(event) => setSelectedVariationOfId(event.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-blue-200 focus:ring-2"
-          >
-            <option value="">Base lift (no variation)</option>
-            {baseLifts.map((lift) => (
-              <option key={lift.id} value={lift.id}>
-                Variation of: {lift.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={handleCreateLift}
-            disabled={liftState.kind === "saving"}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:bg-slate-500"
-          >
-            {liftState.kind === "saving" ? "Saving..." : "Add Lift"}
-          </button>
-        </div>
-        {liftState.kind === "success" && <p className="text-sm text-emerald-600">{liftState.message}</p>}
-        {liftState.kind === "error" && <p className="text-sm text-rose-600">{liftState.message}</p>}
-        <div className="grid gap-2 md:grid-cols-2">
-          {lifts.map((lift) => (
-            <div key={lift.id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-sm">
+      <div className="grid gap-6 xl:grid-cols-[1.1fr_1.4fr]">
+        <div className="space-y-6">
+          <section className="rounded-[24px] border border-sky-200 bg-white/90 p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <span className="font-medium text-slate-800">{lift.name}</span>
-                <span className="ml-2 text-xs text-slate-500">{lift.category?.name ?? "Uncategorized"}</span>
-                {lift.variationOf && <span className="ml-2 text-xs text-blue-700">Variation of {lift.variationOf.name}</span>}
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Tags</p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-900">Manage lift tags</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Use tags to keep the lift dropdowns manageable when the library gets large.
+                </p>
               </div>
+              <div className="rounded-full bg-sky-100 px-3 py-1 text-xs font-medium text-sky-800">
+                {sortedTags.length} tags
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+              <input
+                value={newTagName}
+                onChange={(event) => setNewTagName(event.target.value)}
+                placeholder="Deadlifts, Squats, Bench..."
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              />
+              <button
+                type="button"
+                onClick={handleCreateTag}
+                disabled={tagState.kind === "saving"}
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500"
+              >
+                <FaPlus />
+                {tagState.kind === "saving" ? "Saving tag..." : "Add tag"}
+              </button>
+            </div>
+
+            {tagStatus && <p className={`mt-4 text-sm ${tagStatus.className}`}>{tagStatus.text}</p>}
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              {sortedTags.length === 0 && <p className="text-sm text-slate-500">No tags saved yet.</p>}
+              {sortedTags.map((tag) => (
+                <div key={tag.id} className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-50 px-3 py-2">
+                  <span className="text-sm font-medium text-slate-700">{tag.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTag(tag.id)}
+                    disabled={deletingTagId === tag.id}
+                    aria-label={deletingTagId === tag.id ? "Deleting tag" : `Delete ${tag.name}`}
+                    title={deletingTagId === tag.id ? "Deleting..." : `Delete ${tag.name}`}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-rose-300 bg-white text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                  >
+                    <FaTrashAlt />
+                    <span className="sr-only">{deletingTagId === tag.id ? "Deleting..." : "Delete"}</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-[24px] border border-amber-200 bg-white/90 p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Lift Library</p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-900">Save reusable lifts</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Default sets, reps, and weight are optional. Leave them blank for movements you just want to keep in the library.
+                </p>
+              </div>
+              <div className="rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
+                {sortedSavedLifts.length} saved
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 text-sm text-slate-700 sm:col-span-2">
+                <span>Lift name</span>
+                <input
+                  value={newLiftName}
+                  onChange={(event) => setNewLiftName(event.target.value)}
+                  placeholder="Deadlift, Hyperextensions, Incline Bench..."
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700 sm:col-span-2">
+                <span>Tag</span>
+                <select
+                  value={selectedTagId}
+                  onChange={(event) => setSelectedTagId(event.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                >
+                  <option value="">No tag</option>
+                  {sortedTags.map((tag) => (
+                    <option key={tag.id} value={tag.id}>
+                      {tag.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Default sets</span>
+                <input
+                  value={newLiftSets}
+                  onChange={(event) => setNewLiftSets(event.target.value)}
+                  placeholder="Optional"
+                  type="number"
+                  min={1}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Default reps</span>
+                <input
+                  value={newLiftReps}
+                  onChange={(event) => setNewLiftReps(event.target.value)}
+                  placeholder="Optional"
+                  type="number"
+                  min={1}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700 sm:col-span-2">
+                <span>Default weight ({profileDraft.weightUnit})</span>
+                <input
+                  value={newLiftWeight}
+                  onChange={(event) => setNewLiftWeight(event.target.value)}
+                  placeholder="Optional"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleCreateLift}
+                disabled={liftState.kind === "saving"}
+                className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500"
+              >
+                <FaPlus />
+                {liftState.kind === "saving" ? "Saving lift..." : "Add lift to library"}
+              </button>
+              {liftStatus && <span className={`text-sm ${liftStatus.className}`}>{liftStatus.text}</span>}
+            </div>
+
+            <div className="mt-5 space-y-3">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                <label className="space-y-1 text-sm text-slate-700">
+                  <span>Filter library by tag</span>
+                  <select
+                    value={savedLiftTagFilter}
+                    onChange={(event) => setSavedLiftTagFilter(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-amber-200 focus:ring-2"
+                  >
+                    <option value="">All tags</option>
+                    {sortedTags.map((tag) => (
+                      <option key={tag.id} value={tag.id}>
+                        {tag.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex items-end">
+                  <div className="rounded-full bg-amber-100 px-3 py-2 text-xs font-medium text-amber-800">
+                    {visibleSavedLifts.length} shown
+                  </div>
+                </div>
+              </div>
+
+              {sortedSavedLifts.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                  No lifts saved yet. Start by adding the movements you use most often.
+                </div>
+              )}
+
+              {sortedSavedLifts.length > 0 && visibleSavedLifts.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                  No lifts match the selected tag.
+                </div>
+              )}
+
+              {visibleSavedLifts.map((lift) => (
+                <div
+                  key={lift.id}
+                  className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-base font-semibold text-slate-900">{lift.name}</p>
+                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
+                        {lift.category?.name ?? "Untagged"}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-600">{liftDefaultsLabel(lift)}</p>
+                  </div>
               <button
                 type="button"
                 onClick={() => handleDeleteLift(lift.id)}
                 disabled={deletingLiftId === lift.id}
-                className="rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                aria-label={deletingLiftId === lift.id ? "Deleting lift" : `Delete ${lift.name}`}
+                title={deletingLiftId === lift.id ? "Deleting..." : `Delete ${lift.name}`}
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60"
               >
-                {deletingLiftId === lift.id ? "Deleting..." : "Delete"}
+                <FaTrashAlt />
+                <span className="sr-only">{deletingLiftId === lift.id ? "Deleting..." : "Delete"}</span>
               </button>
             </div>
           ))}
-          {lifts.length === 0 && <span className="text-xs text-slate-500">No saved lifts yet.</span>}
-        </div>
-      </div>
-
-      <div className="space-y-4 rounded-md border border-slate-200 p-4">
-        <h3 className="text-sm font-semibold text-slate-800">4. Favorite Days</h3>
-        {draftDays.map((day) => (
-          <div key={day.key} className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="text-sm text-slate-700">Day Name</label>
-              <input
-                type="text"
-                value={day.name}
-                onChange={(event) => updateDraftDayName(day.key, event.target.value)}
-                placeholder="e.g. Pull Day"
-                className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm outline-none ring-blue-200 focus:ring-2"
-              />
-              {draftDays.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => handleRemoveDraftDay(day.key)}
-                  className="rounded-md border border-rose-300 px-3 py-1 text-xs text-rose-700 hover:bg-rose-50"
-                >
-                  Remove Favorite Day
-                </button>
-              )}
             </div>
-            <div className="grid gap-2 md:grid-cols-2">
-              {lifts.map((lift) => (
-                <label key={`${day.key}-${lift.id}`} className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={day.liftIds.includes(lift.id)}
-                    onChange={() => toggleLiftForDay(day.key, lift.id)}
-                  />
-                  <span>{lift.name}</span>
-                  <span className="text-xs text-slate-500">{lift.category?.name ?? "Uncategorized"}</span>
-                  {lift.variationOf && <span className="text-xs text-blue-700">({lift.variationOf.name} variation)</span>}
-                </label>
-              ))}
-            </div>
-          </div>
-        ))}
+          </section>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={handleAddDraftDay}
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm hover:bg-slate-100"
-          >
-            Add Favorite Day
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveTemplate}
-            disabled={templateState.kind === "saving"}
-            className="rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 disabled:bg-blue-400"
-          >
-            {templateState.kind === "saving" ? "Saving..." : "Save Favorite Days"}
-          </button>
-          {templateState.kind === "success" && <span className="text-sm text-emerald-600">{templateState.message}</span>}
-          {templateState.kind === "error" && <span className="text-sm text-rose-600">{templateState.message}</span>}
-        </div>
-
-        <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
-          <h4 className="text-sm font-semibold text-slate-800">Saved Favorite Days</h4>
-          {templateDays.length === 0 && <p className="text-sm text-slate-500">No favorite days saved yet.</p>}
-          {templateDays.map((day) => (
-            <div key={day.id} className="flex items-start justify-between rounded-md border border-slate-200 bg-white p-3">
+          <section className="rounded-[24px] border border-slate-200 bg-white/90 p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-slate-800">{day.name}</p>
-                <p className="mt-1 text-xs text-slate-600">{day.lifts.map((lift) => lift.name).join(" | ")}</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Preferences</p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-900">Weight and profile settings</h3>
               </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Weight unit</span>
+                <select
+                  value={profileDraft.weightUnit}
+                  onChange={(event) =>
+                    setProfileDraft((current) => ({
+                      ...current,
+                      weightUnit: event.target.value as UserProfile["weightUnit"],
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                >
+                  <option value="kg">kg</option>
+                  <option value="lb">lb</option>
+                </select>
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Height unit</span>
+                <select
+                  value={profileDraft.heightUnit}
+                  onChange={(event) =>
+                    setProfileDraft((current) => ({
+                      ...current,
+                      heightUnit: event.target.value as UserProfile["heightUnit"],
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                >
+                  <option value="cm">cm</option>
+                  <option value="inch">inch</option>
+                </select>
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Height ({profileDraft.heightUnit})</span>
+                <input
+                  value={profileDraft.height}
+                  onChange={(event) => setProfileDraft((current) => ({ ...current, height: event.target.value }))}
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700">
+                <span>Weight ({profileDraft.weightUnit})</span>
+                <input
+                  value={profileDraft.weight}
+                  onChange={(event) => setProfileDraft((current) => ({ ...current, weight: event.target.value }))}
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm text-slate-700 sm:col-span-2">
+                <span>Gender</span>
+                <select
+                  value={profileDraft.gender}
+                  onChange={(event) =>
+                    setProfileDraft((current) => ({
+                      ...current,
+                      gender: event.target.value as UserProfile["gender"],
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                >
+                  <option value="unspecified">Prefer not to say</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="non-binary">Non-binary</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={() => handleDeleteTemplateDay(day.id)}
-                disabled={deletingTemplateDayId === day.id}
-                className="rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                onClick={handleSaveProfile}
+                disabled={profileState.kind === "saving"}
+                className="inline-flex items-center gap-2 rounded-full bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 disabled:bg-sky-400"
               >
-                {deletingTemplateDayId === day.id ? "Deleting..." : "Delete"}
+                <FaSave />
+                {profileState.kind === "saving" ? "Saving..." : "Save preferences"}
               </button>
+              {profileStatus && <span className={`text-sm ${profileStatus.className}`}>{profileStatus.text}</span>}
             </div>
-          ))}
+          </section>
         </div>
+
+        <section className="rounded-[24px] border border-sky-200 bg-white/90 p-4 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Preset Days</p>
+              <h3 className="mt-1 text-lg font-semibold text-slate-900">Build reusable training days</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Each preset day pulls from your saved lift library. Store target sets only where you want them.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleAddPresetDay}
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-4 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-100"
+            >
+              <FaCalendarAlt />
+              Add preset day
+            </button>
+          </div>
+
+          {presetStatus && <p className={`mt-4 text-sm ${presetStatus.className}`}>{presetStatus.text}</p>}
+
+          <div className="mt-5 space-y-4">
+            {presetDays.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                No preset days yet. Add one and start building next week’s training flow.
+              </div>
+            )}
+
+            {presetDays.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto]">
+                  <label className="space-y-1 text-sm text-slate-700">
+                    <span>Choose preset day</span>
+                    <select
+                      value={activePresetDayKey}
+                      onChange={(event) => setActivePresetDayKey(event.target.value)}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                    >
+                      {presetDays.map((day) => (
+                        <option key={day.key} value={day.key}>
+                          {day.name.trim() || "Untitled preset"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm text-slate-700">
+                    <span>Filter lift dropdown by tag</span>
+                    <select
+                      value={presetLiftTagFilter}
+                      onChange={(event) => setPresetLiftTagFilter(event.target.value)}
+                      className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                    >
+                      <option value="">All tags</option>
+                      {sortedTags.map((tag) => (
+                        <option key={tag.id} value={tag.id}>
+                          {tag.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex items-end">
+                    <div className="rounded-full bg-sky-100 px-3 py-2 text-xs font-medium text-sky-800">
+                      {presetDays.length} presets
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activePresetDay && (
+              <div key={activePresetDay.key} className="rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)] p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="flex-1 space-y-3">
+                    <label className="space-y-1 text-sm text-slate-700">
+                      <span>Preset day name</span>
+                      <input
+                        value={activePresetDay.name}
+                        onChange={(event) =>
+                          updatePresetDay(activePresetDay.key, (current) => ({
+                            ...current,
+                            name: event.target.value,
+                          }))
+                        }
+                        placeholder="Pull Day, Lower 1, Saturday Accessories..."
+                        className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDuplicatePresetDay(activePresetDay.key)}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                    >
+                      <FaClone />
+                      Duplicate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemovePresetDay(activePresetDay.key)}
+                      disabled={deletingPresetDayKey === activePresetDay.key}
+                      aria-label={
+                        deletingPresetDayKey === activePresetDay.key
+                          ? "Deleting preset day"
+                          : `Delete ${activePresetDay.name || "preset day"}`
+                      }
+                      title={
+                        deletingPresetDayKey === activePresetDay.key
+                          ? "Deleting..."
+                          : `Delete ${activePresetDay.name || "preset day"}`
+                      }
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                    >
+                      <FaTrashAlt />
+                      <span className="sr-only">{deletingPresetDayKey === activePresetDay.key ? "Deleting..." : "Delete"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {activePresetDay.lifts.map((lift) => (
+                    <div
+                      key={lift.key}
+                      className="grid gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 md:grid-cols-[1.5fr_minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1fr)_auto]"
+                    >
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Lift</span>
+                        <select
+                          value={lift.savedLiftId}
+                          onChange={(event) => handlePresetLiftSelection(activePresetDay.key, lift.key, event.target.value)}
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                        >
+                          <option value="">Choose a saved lift</option>
+                          {selectOptionsForLiftFilter(presetLiftOptions, sortedSavedLifts, lift.savedLiftId).map((savedLift) => (
+                            <option key={savedLift.id} value={savedLift.id}>
+                              {savedLift.name}{savedLift.category ? ` (${savedLift.category.name})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Sets</span>
+                        <input
+                          value={lift.sets}
+                          onChange={(event) =>
+                            updatePresetDay(activePresetDay.key, (current) => ({
+                              ...current,
+                              lifts: current.lifts.map((entry) =>
+                                entry.key === lift.key ? { ...entry, sets: event.target.value } : entry
+                              ),
+                            }))
+                          }
+                          type="number"
+                          min={1}
+                          placeholder="Optional"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                        />
+                      </label>
+
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Reps</span>
+                        <input
+                          value={lift.reps}
+                          onChange={(event) =>
+                            updatePresetDay(activePresetDay.key, (current) => ({
+                              ...current,
+                              lifts: current.lifts.map((entry) =>
+                                entry.key === lift.key ? { ...entry, reps: event.target.value } : entry
+                              ),
+                            }))
+                          }
+                          type="number"
+                          min={1}
+                          placeholder="Optional"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                        />
+                      </label>
+
+                      <label className="space-y-1 text-sm text-slate-700">
+                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Weight ({profileDraft.weightUnit})
+                        </span>
+                        <input
+                          value={lift.weight}
+                          onChange={(event) =>
+                            updatePresetDay(activePresetDay.key, (current) => ({
+                              ...current,
+                              lifts: current.lifts.map((entry) =>
+                                entry.key === lift.key ? { ...entry, weight: event.target.value } : entry
+                              ),
+                            }))
+                          }
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          placeholder="Optional"
+                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                        />
+                      </label>
+
+                      <div className="flex items-end">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updatePresetDay(activePresetDay.key, (current) => ({
+                              ...current,
+                              lifts: current.lifts.filter((entry) => entry.key !== lift.key),
+                            }))
+                          }
+                          aria-label={`Remove ${sortedSavedLifts.find((savedLift) => savedLift.id === Number(lift.savedLiftId))?.name ?? "lift"} from preset`}
+                          title="Remove lift"
+                          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-100"
+                        >
+                          <FaTrashAlt />
+                          <span className="sr-only">Remove</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {activePresetDay.lifts.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                      No lifts in this preset yet.
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => handleAddLiftToPreset(activePresetDay.key)}
+                    className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    <FaPlus />
+                    Add lift
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSavePresetDay(activePresetDay.key)}
+                    disabled={savingPresetDayKey === activePresetDay.key}
+                    className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-500"
+                  >
+                    <FaSave />
+                    {savingPresetDayKey === activePresetDay.key ? "Saving preset..." : "Save preset day"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </section>
   );

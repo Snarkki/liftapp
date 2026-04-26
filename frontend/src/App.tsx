@@ -42,7 +42,7 @@ export function App() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-100 p-2 text-slate-900 sm:p-3 md:p-6">
+    <main className="min-h-screen bg-slate-100 p-2 pb-[calc(1rem+env(safe-area-inset-bottom))] text-slate-900 sm:p-3 md:p-6">
       <div className="mx-auto max-w-5xl space-y-2 sm:space-y-4">
         <nav className="flex flex-wrap gap-1.5 sm:gap-2">
           <a
