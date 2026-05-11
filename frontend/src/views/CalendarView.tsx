@@ -964,7 +964,7 @@ export function CalendarView() {
                     : current
                 )
               }
-              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
             >
               {SUGGEST_HISTORY_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -988,7 +988,7 @@ export function CalendarView() {
                     : current
                 )
               }
-              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
             >
               {suggestDayTypeOptions.map((option) => (
                 <option key={option} value={option}>
@@ -1083,7 +1083,7 @@ export function CalendarView() {
   const editorElement = editorOpen ? (
     <section
       ref={editorSectionRef}
-      className="space-y-4 rounded-[28px] border border-sky-200 bg-[linear-gradient(180deg,#f8fcff_0%,#ffffff_55%,#fff8ef_100%)] p-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] shadow-sm sm:p-6 sm:pb-6"
+      className="space-y-3 rounded-[24px] border border-sky-200 bg-[linear-gradient(180deg,#f8fcff_0%,#ffffff_55%,#fff8ef_100%)] p-3 pb-[calc(6.5rem+env(safe-area-inset-bottom))] shadow-sm sm:rounded-[28px] sm:space-y-4 sm:p-6 sm:pb-6"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-2">
@@ -1092,7 +1092,7 @@ export function CalendarView() {
             Day Editor
           </p>
           <h2 className="text-xl font-semibold text-slate-900">{selectedDateLabel(selectedDateIso)}</h2>
-          <p className="text-sm text-slate-600">
+          <p className="hidden text-sm text-slate-600 sm:block">
             Save this date as a future plan or as a completed lift day. The actions stay pinned on mobile so you can still save while the keyboard is open.
           </p>
         </div>
@@ -1121,10 +1121,10 @@ export function CalendarView() {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-4 rounded-[24px] border border-slate-200 bg-white/90 p-4">
+      <div className="grid gap-3 lg:grid-cols-[1.1fr_0.9fr] lg:gap-4">
+        <div className="space-y-3 rounded-[24px] border border-slate-200 bg-white/90 p-3 sm:space-y-4 sm:p-4">
           {suggestionSummary && (
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+            <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
               <span className="font-semibold">Suggestion summary:</span> {suggestionSummary}
             </div>
           )}
@@ -1136,7 +1136,7 @@ export function CalendarView() {
                 value={dayName}
                 onChange={(event) => setDayName(event.target.value)}
                 placeholder="Pull Day, Lower 1, Recovery Accessories..."
-                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
               />
             </label>
 
@@ -1145,7 +1145,7 @@ export function CalendarView() {
               <select
                 value={dayStatus}
                 onChange={(event) => setDayStatus(event.target.value as TrainingDayStatus)}
-                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
               >
                 {STATUS_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -1160,7 +1160,7 @@ export function CalendarView() {
               <select
                 value={intensity}
                 onChange={(event) => setIntensity(event.target.value as TrainingIntensity)}
-                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
               >
                 {INTENSITY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -1171,13 +1171,13 @@ export function CalendarView() {
             </label>
           </div>
 
-          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-3 sm:p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Preset Day</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="mt-2 grid grid-cols-[1fr_auto] gap-2 sm:mt-3 sm:gap-3">
               <select
                 value={selectedPresetId}
                 onChange={(event) => setSelectedPresetId(event.target.value)}
-                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
               >
                 <option value="">Load a preset day...</option>
                 {presetDays.map((day) => (
@@ -1189,31 +1189,31 @@ export function CalendarView() {
               <button
                 type="button"
                 onClick={handleApplyPreset}
-                className="inline-flex min-h-11 items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 sm:min-h-11 sm:px-4 sm:py-2.5"
               >
                 Apply preset
               </button>
             </div>
           </div>
 
-          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-3 sm:p-4">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
               <FaSearch />
               Add lift
             </div>
 
-            <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="mt-2 grid grid-cols-[1fr_auto] gap-2 sm:mt-3 sm:gap-3">
               <input
                 value={newLiftName}
                 onChange={(event) => setNewLiftName(event.target.value)}
                 placeholder="Search saved lifts or type a custom lift"
                 list="saved-lift-name-options"
-                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
               />
               <button
                 type="button"
                 onClick={handleAddLift}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 sm:min-h-11 sm:px-4 sm:py-2.5"
               >
                 <FaPlus />
                 Add lift
@@ -1243,7 +1243,7 @@ export function CalendarView() {
           </div>
         </div>
 
-        <div className="space-y-4 rounded-[24px] border border-slate-200 bg-white/90 p-4">
+        <div className="space-y-3 rounded-[24px] border border-slate-200 bg-white/90 p-3 sm:space-y-4 sm:p-4">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
             <FaDumbbell />
             Lifts in this day
@@ -1255,122 +1255,113 @@ export function CalendarView() {
             </div>
           )}
 
-          <div className="space-y-4">
+          <div className="space-y-3">
             {draftLifts.map((lift) => (
-              <div key={lift.key} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div key={lift.key} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-2.5 sm:rounded-[24px] sm:p-4">
+                <div className="flex flex-row items-center gap-2 sm:gap-3 sm:justify-between">
                   <input
                     value={lift.name}
                     onChange={(event) => updateDraftLiftName(lift.key, event.target.value)}
                     placeholder="Lift name"
-                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-200 focus:ring-2"
                   />
                   <button
                     type="button"
                     onClick={() => removeDraftLift(lift.key)}
                     aria-label={`Remove ${lift.name || "lift"}`}
                     title="Remove lift"
-                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-rose-300 bg-white text-sm font-medium text-rose-700 hover:bg-rose-50 sm:h-11 sm:w-11"
                   >
                     <FaTrashAlt />
                     <span className="sr-only">Remove lift</span>
                   </button>
                 </div>
 
-                <div className="mt-4 space-y-3">
+                <div className="mt-2 space-y-1.5 sm:mt-4 sm:space-y-3">
                   {lift.rows.map((row, index) => (
                     <div
                       key={row.key}
-                      className="grid grid-cols-2 gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 md:grid-cols-[minmax(0,0.7fr)_minmax(0,0.7fr)_minmax(0,1fr)_auto_auto_auto]"
+                      className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 sm:gap-2 sm:p-2"
                     >
-                      <label className="space-y-1 text-sm text-slate-700">
-                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Sets</span>
-                        <input
-                          value={row.sets}
-                          onChange={(event) => updateDraftLiftRow(lift.key, row.key, "sets", event.target.value)}
-                          type="number"
-                          min={1}
-                          placeholder={`Row ${index + 1}`}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
-                        />
-                      </label>
-
-                      <label className="space-y-1 text-sm text-slate-700">
-                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Reps</span>
-                        <input
-                          value={row.reps}
-                          onChange={(event) => updateDraftLiftRow(lift.key, row.key, "reps", event.target.value)}
-                          type="number"
-                          min={1}
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
-                        />
-                      </label>
-
-                      <label className="col-span-2 space-y-1 text-sm text-slate-700 md:col-span-1">
-                        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Weight ({weightUnit})
-                        </span>
-                        <input
-                          value={row.weight}
-                          onChange={(event) => updateDraftLiftRow(lift.key, row.key, "weight", event.target.value)}
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none ring-sky-200 focus:ring-2"
-                        />
-                      </label>
-
+                      <input
+                        value={row.sets}
+                        onChange={(event) => updateDraftLiftRow(lift.key, row.key, "sets", event.target.value)}
+                        type="number"
+                        min={1}
+                        placeholder="Sets"
+                        aria-label={`Sets row ${index + 1}`}
+                        className="w-0 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm outline-none ring-sky-200 focus:ring-2"
+                      />
+                      <input
+                        value={row.reps}
+                        onChange={(event) => updateDraftLiftRow(lift.key, row.key, "reps", event.target.value)}
+                        type="number"
+                        min={1}
+                        placeholder="Reps"
+                        aria-label={`Reps row ${index + 1}`}
+                        className="w-0 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm outline-none ring-sky-200 focus:ring-2"
+                      />
+                      <input
+                        value={row.weight}
+                        onChange={(event) => updateDraftLiftRow(lift.key, row.key, "weight", event.target.value)}
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder={weightUnit}
+                        aria-label={`Weight (${weightUnit}) row ${index + 1}`}
+                        className="w-0 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm outline-none ring-sky-200 focus:ring-2"
+                      />
                       {dayStatus === "completed" && (
-                        <label className="col-span-2 flex items-end md:col-span-1">
-                          <span className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700">
-                            <input
-                              type="checkbox"
-                              checked={row.isPr}
-                              onChange={(event) => updateDraftLiftRowPr(lift.key, row.key, event.target.checked)}
-                              className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                            />
-                            <FaMedal className={row.isPr ? "text-amber-500" : "text-slate-400"} />
-                            PR
-                          </span>
-                        </label>
-                      )}
-
-                      <div className="col-span-2 flex items-end md:col-span-1">
                         <button
                           type="button"
-                          onClick={() =>
-                            setNotesModal({
-                              mode: "edit",
-                              liftKey: lift.key,
-                              rowKey: row.key,
-                              title: `${lift.name || "Lift"} Row ${index + 1} Notes`,
-                            })
-                          }
+                          onClick={() => updateDraftLiftRowPr(lift.key, row.key, !row.isPr)}
+                          aria-label={row.isPr ? `Unmark PR row ${index + 1}` : `Mark PR row ${index + 1}`}
+                          aria-pressed={row.isPr}
+                          title={row.isPr ? "Personal record (tap to unset)" : "Mark as personal record"}
                           className={[
-                            "inline-flex w-full items-center justify-center gap-2 rounded-full border px-4 py-3 text-sm font-medium",
-                            row.notes.trim()
-                              ? "border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100"
-                              : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100",
+                            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border",
+                            row.isPr
+                              ? "border-amber-300 bg-amber-100 text-amber-700 hover:bg-amber-200"
+                              : "border-slate-300 bg-white text-slate-400 hover:bg-slate-100",
                           ].join(" ")}
                         >
-                          <FaStickyNote />
-                          Notes
+                          <FaMedal />
+                          <span className="sr-only">PR</span>
                         </button>
-                      </div>
-
-                      <div className="col-span-2 flex items-end justify-end md:col-span-1 md:justify-start">
-                        <button
-                          type="button"
-                          onClick={() => removeDraftLiftRow(lift.key, row.key)}
-                          disabled={lift.rows.length <= 1}
-                          aria-label={`Remove row ${index + 1}`}
-                          title={lift.rows.length <= 1 ? "At least one row is required" : "Remove row"}
-                          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <FaTrashAlt />
-                          <span className="sr-only">Remove row</span>
-                        </button>
-                      </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNotesModal({
+                            mode: "edit",
+                            liftKey: lift.key,
+                            rowKey: row.key,
+                            title: `${lift.name || "Lift"} Row ${index + 1} Notes`,
+                          })
+                        }
+                        aria-label={row.notes.trim() ? `Edit notes row ${index + 1}` : `Add notes row ${index + 1}`}
+                        title={row.notes.trim() ? "Edit notes" : "Add notes"}
+                        className={[
+                          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border",
+                          row.notes.trim()
+                            ? "border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100"
+                            : "border-slate-300 bg-white text-slate-500 hover:bg-slate-100",
+                        ].join(" ")}
+                      >
+                        <FaStickyNote />
+                        <span className="sr-only">Notes</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeDraftLiftRow(lift.key, row.key)}
+                        disabled={lift.rows.length <= 1}
+                        aria-label={`Remove row ${index + 1}`}
+                        title={lift.rows.length <= 1 ? "At least one row is required" : "Remove row"}
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <FaTrashAlt />
+                        <span className="sr-only">Remove row</span>
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -1378,7 +1369,7 @@ export function CalendarView() {
                 <button
                   type="button"
                   onClick={() => addDraftLiftRow(lift.key)}
-                  className="mt-4 inline-flex items-center gap-2 rounded-full border border-sky-300 bg-white px-4 py-2.5 text-sm font-medium text-sky-700 hover:bg-sky-50"
+                  className="mt-2 inline-flex items-center gap-2 rounded-full border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-700 hover:bg-sky-50 sm:mt-4 sm:px-4 sm:py-2.5"
                 >
                   <FaPlus />
                   Add row
@@ -1523,16 +1514,16 @@ export function CalendarView() {
                 ].join(" ")}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-700 sm:text-xs">{day}</span>
+                  <span className="text-[13px] font-bold text-slate-900 sm:text-xs sm:font-semibold sm:text-slate-700">{day}</span>
                   {hasPr && (
-                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-200 text-[8px] text-amber-900">
+                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-200 text-[9px] text-amber-900">
                       <FaMedal />
                     </span>
                   )}
                 </div>
 
                 {trainingDay && (
-                  <div className="mt-1 space-y-1">
+                  <div className="mt-1 space-y-0.5 sm:space-y-1">
                     <span
                       className={[
                         "hidden rounded-full px-2 py-0.5 text-[8px] font-semibold uppercase tracking-wide sm:inline-flex sm:text-[10px]",
@@ -1543,7 +1534,7 @@ export function CalendarView() {
                     </span>
                     <span
                       className={[
-                        "inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide sm:hidden",
+                        "inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide sm:hidden",
                         STATUS_BADGE_CLASS[trainingDay.status],
                       ].join(" ")}
                     >
@@ -1551,7 +1542,7 @@ export function CalendarView() {
                     </span>
                     <div
                       className={[
-                        "truncate rounded-lg px-1.5 py-1 text-[9px] font-medium leading-tight sm:line-clamp-2 sm:px-2 sm:text-[10px]",
+                        "truncate rounded-lg px-1.5 py-0.5 text-[10px] font-semibold leading-tight sm:line-clamp-2 sm:px-2 sm:py-1 sm:text-[11px] sm:font-medium",
                         dayBadgeClass(trainingDay),
                       ].join(" ")}
                     >
